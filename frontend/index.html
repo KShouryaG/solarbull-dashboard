@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SolarBull Energy Dashboard</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      :root {
+        /* Brand */
+        --sb-orange:        #F7941D;
+        --sb-orange-dark:   #E07B0A;
+        --sb-orange-light:  #FFF3E0;
+        --sb-blue:          #1E5BA6;
+        --sb-blue-dark:     #164A8C;
+        --sb-blue-light:    #EBF2FC;
+
+        /* Background */
+        --color-background-page:      #F4F6FA;
+        --color-background-primary:   #FFFFFF;
+        --color-background-secondary: #F0F2F7;
+        --color-background-sidebar:   #0F2A5C;
+        --color-background-success:   #E8F8F1;
+        --color-background-warning:   #FFF8E8;
+        --color-background-danger:    #FEF0F0;
+        --color-background-info:      #EBF2FC;
+
+        /* Text */
+        --color-text-primary:   #1A1F2E;
+        --color-text-secondary: #6B7280;
+        --color-text-tertiary:  #9CA3AF;
+        --color-text-success:   #0E9B65;
+        --color-text-warning:   #B45309;
+        --color-text-danger:    #DC2626;
+        --color-text-info:      #1E5BA6;
+        --color-text-sidebar:   #CBD5E1;
+        --color-text-sidebar-active: #FFFFFF;
+
+        /* Border */
+        --color-border-light:   #E5E7EB;
+        --color-border-medium:  #D1D5DB;
+        --color-border-tertiary: #E5E7EB;
+        --color-border-secondary: #D1D5DB;
+
+        /* Grade colors */
+        --color-grade-excellent: #0E9B65;
+        --color-grade-good:      #1E5BA6;
+        --color-grade-fair:      #F7941D;
+        --color-grade-poor:      #DC2626;
+
+        /* Radius */
+        --border-radius-sm: 4px;
+        --border-radius-md: 8px;
+        --border-radius-lg: 12px;
+        --border-radius-xl: 16px;
+
+        /* Shadow */
+        --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+        --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
+        --shadow-lg: 0 8px 24px rgba(0,0,0,0.10);
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+        background: var(--color-background-page);
+        color: var(--color-text-primary);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      #root { display: flex; min-height: 100vh; }
+
+      input, select, textarea {
+        font-family: inherit;
+        font-size: 14px;
+        padding: 8px 12px;
+        border: 1px solid var(--color-border-light);
+        border-radius: var(--border-radius-md);
+        background: var(--color-background-primary);
+        color: var(--color-text-primary);
+        outline: none;
+        transition: border-color 0.15s;
+        width: 100%;
+      }
+      input:focus, select:focus, textarea:focus {
+        border-color: var(--sb-blue);
+        box-shadow: 0 0 0 3px rgba(30,91,166,0.12);
+      }
+      button {
+        font-family: inherit;
+        font-size: 13px;
+        padding: 8px 16px;
+        border: 1px solid var(--color-border-light);
+        border-radius: var(--border-radius-md);
+        background: var(--color-background-primary);
+        color: var(--color-text-primary);
+        cursor: pointer;
+        outline: none;
+        transition: opacity 0.15s, background 0.15s;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      button:hover:not(:disabled) { opacity: 0.85; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+      /* Scrollbar */
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: var(--color-border-medium); border-radius: 3px; }
+
+      @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+      .fade-in { animation: fadeIn 0.25s ease; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

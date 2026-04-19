@@ -1,0 +1,42 @@
+# Environment / secrets
+.env
+.env.*
+!env.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+*.egg-info/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+frontend/.vite/
+
+# Logs
+*.log
+/tmp/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
