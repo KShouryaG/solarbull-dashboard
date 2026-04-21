@@ -5,6 +5,7 @@ import { GradeBadge, StatusBadge } from "../components/Badge.jsx";
 import { fmt, fmtDec, fmtPct, rupee } from "../utils/format.js";
 import { GRADE_COLORS } from "../utils/computed.js";
 import * as XLSX from "xlsx";
+import { saveAs } from "file-saver";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend,
@@ -120,6 +121,141 @@ export default function Reports() {
     XLSX.writeFile(wb, `solarbull-report-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
+  // ── Export PDF ─────────────────────────────────
+  const exportPDF = async () => {
+    const { default: jsPDF } = await import("jspdf");
+    const { default: autoTable } = await import("jspdf-autotable");
+
+    const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+    const now = new Date().toLocaleString("en-IN");
+    const ORANGE = [247, 148, 29];
+    const BLUE   = [30, 91, 166];
+    const W = doc.internal.pageSize.getWidth();
+
+    // Header
+    doc.setFillColor(...BLUE);
+    doc.rect(0, 0, W, 22, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(16);
+    doc.setFont("helvetica", "bold");
+    doc.text("SolarBull Energy — Fleet Report", 12, 10);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(`Generated: ${now}  |  Plants: ${plants.length}  |  Total Capacity: ${Math.round(totals.totalCap)} kWp`, 12, 17);
+
+    // KPI summary boxes
+    const kpis = [
+      ["Today Generated", `${fmt(Math.round(totals.todayGen))} kWh`],
+      ["Fleet Avg PR",    totals.avgPR ? `${(totals.avgPR*100).toFixed(1)}%` : "—"],
+      ["CO₂ Avoided",    `${fmt(Math.round(totals.totalCO2/1000))} t`],
+      ["Today Revenue",  `${rupee(Math.round(totals.totalRev))}`],
+      ["Online / Total", `${totals.online} / ${totals.count}`],
+      ["Active Alerts",  String(totals.totalAlertsCount)],
+    ];
+    let kpiX = 12;
+    doc.setTextColor(0, 0, 0);
+    kpis.forEach(([label, value]) => {
+      doc.setFillColor(245, 247, 250);
+      doc.roundedRect(kpiX, 26, 43, 18, 2, 2, "F");
+      doc.setFontSize(7);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(100, 110, 130);
+      doc.text(label, kpiX + 2, 31);
+      doc.setFontSize(11);
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(...ORANGE);
+      doc.text(value, kpiX + 2, 39);
+      kpiX += 45;
+    });
+
+    // Plant data table
+    autoTable(doc, {
+      startY: 48,
+      head: [["#","Plant","City","Status","Grade","Cap (kWp)","Today (kWh)","Lifetime (MWh)","PR%","Alerts"]],
+      body: displayPlants.map((p, i) => [
+        i + 1, p.name, p.city || "—", p.status, p.grade || "—",
+        fmtDec(p.capacity), fmt(p.todayEnergy),
+        fmt(+((p.totalEnergy||0)/1000).toFixed(1)),
+        p.performanceRatio ? `${(p.performanceRatio*100).toFixed(1)}%` : "—",
+        p.errors?.length || 0,
+      ]),
+      headStyles: { fillColor: BLUE, textColor: 255, fontStyle: "bold", fontSize: 8 },
+      bodyStyles: { fontSize: 7.5, cellPadding: 2 },
+      alternateRowStyles: { fillColor: [248, 249, 252] },
+      columnStyles: { 0: { cellWidth: 8 }, 1: { cellWidth: 52 }, 4: { cellWidth: 20 } },
+      didDrawPage: (data) => {
+        // Footer
+        doc.setFontSize(7);
+        doc.setTextColor(150);
+        doc.text(`SolarBull Energy — Confidential  |  Page ${data.pageNumber}`, 12, doc.internal.pageSize.getHeight() - 5);
+      },
+    });
+
+    doc.save(`SolarBull-Report-${new Date().toISOString().slice(0,10)}.pdf`);
+  };
+
+  // ── Export Word ─────────────────────────────────
+  const exportWord = async () => {
+    const { Document, Packer, Paragraph, Table, TableRow, TableCell, TextRun, HeadingLevel, AlignmentType, WidthType, ShadingType } = await import("docx");
+
+    const rows = displayPlants.map((p) => new TableRow({
+      children: [
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: p.name, size: 16 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: p.city || "—", size: 16 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: p.status, size: 16 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: p.grade || "—", size: 16 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: fmtDec(p.capacity), size: 16 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(fmt(p.todayEnergy)), size: 16 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: p.performanceRatio ? `${(p.performanceRatio*100).toFixed(1)}%` : "—", size: 16 })] })] }),
+        new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: String(p.errors?.length || 0), size: 16 })] })] }),
+      ],
+    }));
+
+    const headerCells = ["Plant Name","City","Status","Grade","Capacity (kWp)","Today (kWh)","PR%","Alerts"].map((h) =>
+      new TableCell({
+        shading: { type: ShadingType.SOLID, color: "1E5BA6" },
+        children: [new Paragraph({ children: [new TextRun({ text: h, color: "FFFFFF", bold: true, size: 16 })] })],
+      })
+    );
+
+    const doc = new Document({
+      sections: [{
+        children: [
+          new Paragraph({
+            children: [new TextRun({ text: "SolarBull Energy — Fleet Report", bold: true, size: 36, color: "1E5BA6" })],
+            heading: HeadingLevel.HEADING_1,
+          }),
+          new Paragraph({
+            children: [new TextRun({ text: `Generated: ${new Date().toLocaleString("en-IN")}  |  Plants: ${plants.length}  |  Capacity: ${Math.round(totals.totalCap)} kWp`, size: 20, color: "888888" })],
+          }),
+          new Paragraph({ children: [new TextRun({ text: "" })] }),
+          new Paragraph({
+            children: [
+              new TextRun({ text: `Today: ${fmt(Math.round(totals.todayGen))} kWh  |  `, size: 22 }),
+              new TextRun({ text: `Avg PR: ${totals.avgPR ? `${(totals.avgPR*100).toFixed(1)}%` : "—"}  |  `, size: 22 }),
+              new TextRun({ text: `CO₂ Avoided: ${fmt(Math.round(totals.totalCO2/1000))} t  |  `, size: 22 }),
+              new TextRun({ text: `Revenue: ${rupee(Math.round(totals.totalRev))}  |  `, size: 22 }),
+              new TextRun({ text: `Online: ${totals.online}/${totals.count}`, size: 22 }),
+            ],
+          }),
+          new Paragraph({ children: [new TextRun({ text: "" })] }),
+          new Table({
+            width: { size: 100, type: WidthType.PERCENTAGE },
+            rows: [new TableRow({ children: headerCells, tableHeader: true }), ...rows],
+          }),
+          new Paragraph({ children: [new TextRun({ text: "" })] }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            children: [new TextRun({ text: "SolarBull Energy — Confidential", size: 16, color: "999999" })],
+          }),
+        ],
+      }],
+    });
+
+    const blob = await Packer.toBlob(doc);
+    saveAs(blob, `SolarBull-Report-${new Date().toISOString().slice(0,10)}.docx`);
+  };
+
   return (
     <div className="fade-in">
       {/* Header */}
@@ -130,14 +266,20 @@ export default function Reports() {
             Aggregate KPIs, charts, and exportable data — {plants.length} plants
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: "auto" }}>
             <option value="all">All plants</option>
             <option value="online">Online only</option>
             <option value="warning">Warning only</option>
             <option value="offline">Offline only</option>
           </select>
-          <button onClick={exportExcel} style={{ background: "var(--sb-blue)", color: "#fff", border: "none", fontWeight: 600, padding: "9px 16px" }}>
+          <button onClick={exportPDF} style={{ background: "#DC2626", color: "#fff", border: "none", fontWeight: 600, padding: "9px 16px" }}>
+            ↓ PDF
+          </button>
+          <button onClick={exportWord} style={{ background: "#1E5BA6", color: "#fff", border: "none", fontWeight: 600, padding: "9px 16px" }}>
+            ↓ Word
+          </button>
+          <button onClick={exportExcel} style={{ background: "#0E9B65", color: "#fff", border: "none", fontWeight: 600, padding: "9px 16px" }}>
             ↓ Excel
           </button>
           <button onClick={exportCSV} style={{ background: "transparent", color: "var(--sb-blue)", border: "1px solid var(--sb-blue)", fontWeight: 600, padding: "9px 16px" }}>

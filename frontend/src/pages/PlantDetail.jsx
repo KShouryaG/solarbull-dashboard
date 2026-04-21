@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getInverters } from "../api.js";
+import { getInverters, getPeriodCompare } from "../api.js";
 import { usePlants } from "../context/PlantContext.jsx";
 import MetricCard from "../components/MetricCard.jsx";
 import { StatusBadge, GradeBadge, SeverityBadge } from "../components/Badge.jsx";
@@ -10,7 +10,8 @@ import { fmt, fmtDec, fmtPct, fmtKW, rupee, formatDate } from "../utils/format.j
 import { BENCHMARKS, plantAge, degradedCapacity, GRADE_COLORS } from "../utils/computed.js";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis,
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from "recharts";
 
 const TABS = [
@@ -18,6 +19,7 @@ const TABS = [
   ["inverters", "Inverters"],
   ["financial", "Financial & Env"],
   ["timeseries","Charts"],
+  ["periods",   "Period Compare"],
   ["alerts",    "Alerts"],
   ["history",   "7-Day History"],
 ];
@@ -318,6 +320,9 @@ export default function PlantDetail() {
         </div>
       )}
 
+      {/* ─── PERIOD COMPARE ─────────────────────────── */}
+      {tab === "periods" && <PeriodCompareTab plantId={plant.id} plantName={plant.name} />}
+
       {/* ─── ALERTS ─────────────────────────────────── */}
       {tab === "alerts" && <AlertsTable alarms={plant.errors || []} />}
 
@@ -339,7 +344,7 @@ export default function PlantDetail() {
             <div style={{ color: "var(--color-text-tertiary)", textAlign: "center", padding: 40 }}>No history data</div>
           )}
           {historyData.length > 0 && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginTop: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginTop: 20 }}>
               {[
                 { label: "7-Day Total",    value: `${fmt(Math.round(historyData.reduce((s, d) => s + d.energy, 0)))} kWh` },
                 { label: "Daily Average",  value: `${fmt(Math.round(historyData.reduce((s, d) => s + d.energy, 0) / 7))} kWh` },
@@ -354,6 +359,152 @@ export default function PlantDetail() {
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Period Compare sub-component ───────────────────────────────────────────
+function PeriodCompareTab({ plantId, plantName }) {
+  const today = new Date();
+  const fmt30  = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
+  const nDaysAgo = (n) => { const d = new Date(today); d.setDate(d.getDate() - n); return d; };
+
+  const [p1Start, setP1Start] = useState(nDaysAgo(60).toISOString().slice(0, 10));
+  const [p1End,   setP1End]   = useState(nDaysAgo(31).toISOString().slice(0, 10));
+  const [p2Start, setP2Start] = useState(nDaysAgo(30).toISOString().slice(0, 10));
+  const [p2End,   setP2End]   = useState(today.toISOString().slice(0, 10));
+  const [data,    setData]    = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState("");
+
+  const run = async () => {
+    setLoading(true); setError(""); setData(null);
+    try {
+      const res = await getPeriodCompare(plantId, {
+        p1_start: p1Start.replace(/-/g, ""),
+        p1_end:   p1End.replace(/-/g, ""),
+        p2_start: p2Start.replace(/-/g, ""),
+        p2_end:   p2End.replace(/-/g, ""),
+      });
+      setData(res);
+    } catch (e) { setError(e.message); }
+    setLoading(false);
+  };
+
+  const card = (label, v1, v2, unit = "") => {
+    const diff = v1 && v2 ? ((v2 - v1) / v1 * 100).toFixed(1) : null;
+    return (
+      <div key={label} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "12px 14px" }}>
+        <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 6 }}>{label}</div>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
+          <div>
+            <div style={{ fontSize: 10, color: "#F7941D", marginBottom: 2 }}>Period 1</div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{fmt(Math.round(v1 || 0))}{unit}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: "#1E5BA6", marginBottom: 2 }}>Period 2</div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{fmt(Math.round(v2 || 0))}{unit}</div>
+          </div>
+          {diff !== null && (
+            <div style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color: parseFloat(diff) >= 0 ? "#0E9B65" : "#DC2626" }}>
+              {parseFloat(diff) >= 0 ? "▲" : "▼"} {Math.abs(parseFloat(diff))}%
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* Date pickers */}
+      <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)", marginBottom: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Select Comparison Periods</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#F7941D", marginBottom: 8 }}>Period 1 (baseline)</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>Start</label>
+                <input type="date" value={p1Start} onChange={(e) => setP1Start(e.target.value)} />
+              </div>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>End</label>
+                <input type="date" value={p1End} onChange={(e) => setP1End(e.target.value)} />
+              </div>
+            </div>
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#1E5BA6", marginBottom: 8 }}>Period 2 (comparison)</div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>Start</label>
+                <input type="date" value={p2Start} onChange={(e) => setP2Start(e.target.value)} />
+              </div>
+              <div style={{ flex: 1, minWidth: 120 }}>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>End</label>
+                <input type="date" value={p2End} onChange={(e) => setP2End(e.target.value)} />
+              </div>
+            </div>
+          </div>
+        </div>
+        <button
+          onClick={run} disabled={loading}
+          style={{ marginTop: 16, background: "var(--sb-orange)", color: "#fff", border: "none", fontWeight: 600, padding: "9px 20px" }}
+        >
+          {loading ? "Loading..." : "Compare Periods"}
+        </button>
+      </div>
+
+      {error && <div style={{ padding: "10px 14px", background: "var(--color-background-danger)", color: "var(--color-text-danger)", borderRadius: 8, marginBottom: 16, fontSize: 13 }}>{error}</div>}
+
+      {data && (
+        <>
+          {/* Summary cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginBottom: 20 }}>
+            {card("Total Energy (kWh)", data.summary.p1Total, data.summary.p2Total, " kWh")}
+            {card("Daily Average (kWh)", data.summary.p1Avg, data.summary.p2Avg, " kWh")}
+            {card("Best Day (kWh)", data.summary.p1Best, data.summary.p2Best, " kWh")}
+            {card("Days Covered", data.summary.days1, data.summary.days2, " days")}
+          </div>
+
+          {/* Overlay chart */}
+          <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)", marginBottom: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Daily Generation Overlay</div>
+            <div style={{ display: "flex", gap: 16, marginBottom: 12 }}>
+              <span style={{ fontSize: 12, color: "#F7941D", fontWeight: 600 }}>— {data.period1.label}</span>
+              <span style={{ fontSize: 12, color: "#1E5BA6", fontWeight: 600 }}>— {data.period2.label}</span>
+            </div>
+            <ResponsiveContainer width="100%" height={280}>
+              <LineChart data={data.series} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-light)" vertical={false} />
+                <XAxis dataKey="idx" tick={{ fontSize: 10 }} tickLine={false} axisLine={false} label={{ value: "Day #", position: "insideBottomRight", fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}`} />
+                <Tooltip formatter={(v, n) => [`${v} kWh`, n === "energy1" ? "Period 1" : "Period 2"]} labelFormatter={(l) => `Day ${l}`} />
+                <Legend formatter={(v) => v === "energy1" ? `P1: ${data.period1.label}` : `P2: ${data.period2.label}`} />
+                <Line dataKey="energy1" name="energy1" stroke="#F7941D" strokeWidth={2} dot={false} connectNulls />
+                <Line dataKey="energy2" name="energy2" stroke="#1E5BA6" strokeWidth={2} dot={false} connectNulls />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Bar comparison */}
+          <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Side-by-Side Daily Bars</div>
+            <ResponsiveContainer width="100%" height={260}>
+              <BarChart data={data.series.slice(0, 31)} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-light)" vertical={false} />
+                <XAxis dataKey="idx" tick={{ fontSize: 9 }} tickLine={false} axisLine={false} />
+                <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+                <Tooltip formatter={(v, n) => [`${v} kWh`, n === "energy1" ? "Period 1" : "Period 2"]} labelFormatter={(l) => `Day ${l}`} />
+                <Legend formatter={(v) => v === "energy1" ? "Period 1" : "Period 2"} />
+                <Bar dataKey="energy1" name="energy1" fill="#F7941D" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="energy2" name="energy2" fill="#1E5BA6" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </>
       )}
     </div>
   );

@@ -113,6 +113,46 @@
       @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
       @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
       .fade-in { animation: fadeIn 0.25s ease; }
+
+      /* ── Responsive ────────────────────────────── */
+      /* Tablet: collapse sidebar to icon strip */
+      @media (max-width: 1099px) and (min-width: 768px) {
+        main { margin-left: 64px !important; }
+      }
+      /* Mobile: no sidebar offset */
+      @media (max-width: 767px) {
+        main { margin-left: 0 !important; }
+        /* Stack two-column grids to single column on mobile */
+        [style*="gridTemplateColumns: 1fr 1fr"],
+        [style*="gridTemplateColumns: \"1fr 1fr\""] {
+          grid-template-columns: 1fr !important;
+        }
+        /* Make KPI cards 2-col on mobile */
+        [style*="minmax(145px"] {
+          grid-template-columns: repeat(2, 1fr) !important;
+        }
+        [style*="minmax(155px"] {
+          grid-template-columns: repeat(2, 1fr) !important;
+        }
+        [style*="minmax(160px"] {
+          grid-template-columns: repeat(2, 1fr) !important;
+        }
+        /* Tabs scroll horizontally */
+        [style*="borderBottom: \"2px solid var(--color-border-light)\""] {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        h1[style*="fontSize: 22"] { font-size: 18px !important; }
+      }
+
+      /* Print styles for PDF */
+      @media print {
+        body { background: #fff; }
+        aside { display: none !important; }
+        main { margin-left: 0 !important; padding: 12px !important; }
+        button { display: none !important; }
+        .no-print { display: none !important; }
+      }
     </style>
   </head>
   <body>

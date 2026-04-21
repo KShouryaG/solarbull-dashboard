@@ -77,3 +77,12 @@ export const getInverters = (plantId) => get(`/api/plants/${plantId}/inverters`)
 // Settings
 export const getSettings  = ()     => get("/api/settings");
 export const saveSettings = (data) => put("/api/settings", data);
+
+// Period comparison
+export const getPeriodCompare = (plantId, p) => {
+  const qs = new URLSearchParams(p).toString();
+  return get(`/api/plants/${plantId}/period-compare?${qs}`);
+};
+
+// AI Chatbot
+export const sendChatMessage = (question) => post("/api/chat", { question });

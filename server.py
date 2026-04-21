@@ -1356,6 +1356,184 @@ def _make_demo_inverter(idx, plant_id):
         "lastUpdate":  datetime.now().isoformat(),
     }
 
+# ---------------------------------------------------------------------------
+# Period-over-Period comparison
+# ---------------------------------------------------------------------------
+@app.route("/api/plants/<plant_id>/period-compare")
+@require_role()
+def period_compare(plant_id, current_user):
+    """
+    Compare two date ranges for the same plant.
+    Query params: p1_start, p1_end, p2_start, p2_end  (YYYYMMDD)
+    """
+    if current_user["role"] != "admin":
+        allowed = set(json.loads(current_user["plant_ids"] or "[]"))
+        if plant_id not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+    p1_start = request.args.get("p1_start", "")
+    p1_end   = request.args.get("p1_end", "")
+    p2_start = request.args.get("p2_start", "")
+    p2_end   = request.args.get("p2_end", "")
+
+    if not all([p1_start, p1_end, p2_start, p2_end]):
+        return jsonify({"error": "p1_start, p1_end, p2_start, p2_end required (YYYYMMDD)"}), 400
+
+    try:
+        dt_p1s = datetime.strptime(p1_start, "%Y%m%d")
+        dt_p1e = datetime.strptime(p1_end,   "%Y%m%d")
+        dt_p2s = datetime.strptime(p2_start, "%Y%m%d")
+        dt_p2e = datetime.strptime(p2_end,   "%Y%m%d")
+    except ValueError:
+        return jsonify({"error": "Invalid date format. Use YYYYMMDD."}), 400
+
+    def fetch_range(start_dt, end_dt):
+        """Fetch daily energy for a date range using monthly chart API."""
+        import random
+        data = {}
+        cur = start_dt.replace(day=1)
+        while cur <= end_dt:
+            month_key = cur.strftime("%Y%m")
+            try:
+                if USE_DEMO or not SUNGROW_APPKEY:
+                    # Demo: generate plausible daily data
+                    import calendar
+                    _, days_in = calendar.monthrange(cur.year, cur.month)
+                    for d in range(1, days_in + 1):
+                        try:
+                            date = cur.replace(day=d)
+                        except ValueError:
+                            break
+                        if start_dt <= date <= end_dt:
+                            data[date.strftime("%Y-%m-%d")] = round(400 * (0.75 + random.random() * 0.45), 1)
+                else:
+                    raw = client.get_chart_data(plant_id, month_key, "2", "p83022")
+                    if raw and isinstance(raw, dict):
+                        pts = raw.get("data_points", raw.get("points", []))
+                        for idx, p in enumerate(pts):
+                            try:
+                                date = cur.replace(day=idx + 1)
+                            except ValueError:
+                                break
+                            if start_dt <= date <= end_dt:
+                                val = p.get("value")
+                                if val is not None and val != "--":
+                                    try:
+                                        data[date.strftime("%Y-%m-%d")] = round(float(val), 1)
+                                    except (ValueError, TypeError):
+                                        pass
+            except Exception as e:
+                log.warning("Period compare fetch %s failed: %s", month_key, e)
+            cur = cur.replace(month=cur.month % 12 + 1) if cur.month < 12 else cur.replace(year=cur.year + 1, month=1)
+        return data
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f1 = ex.submit(fetch_range, dt_p1s, dt_p1e)
+            f2 = ex.submit(fetch_range, dt_p2s, dt_p2e)
+            d1, d2 = f1.result(), f2.result()
+
+        days1, days2 = sorted(d1.keys()), sorted(d2.keys())
+        series = []
+        for i in range(max(len(days1), len(days2))):
+            row = {"idx": i + 1,
+                   "date1":   days1[i] if i < len(days1) else None,
+                   "energy1": d1[days1[i]] if i < len(days1) else None,
+                   "date2":   days2[i] if i < len(days2) else None,
+                   "energy2": d2[days2[i]] if i < len(days2) else None}
+            series.append(row)
+
+        s1, s2  = sum(d1.values()), sum(d2.values())
+        avg1    = s1 / len(d1) if d1 else 0
+        avg2    = s2 / len(d2) if d2 else 0
+        return jsonify({
+            "plant_id": plant_id,
+            "period1":  {"label": f"{dt_p1s.strftime('%d %b %Y')} – {dt_p1e.strftime('%d %b %Y')}",
+                         "data":  [{"date": k, "energy": v} for k, v in sorted(d1.items())]},
+            "period2":  {"label": f"{dt_p2s.strftime('%d %b %Y')} – {dt_p2e.strftime('%d %b %Y')}",
+                         "data":  [{"date": k, "energy": v} for k, v in sorted(d2.items())]},
+            "series":   series,
+            "summary": {
+                "p1Total": round(s1, 1), "p2Total": round(s2, 1),
+                "p1Avg":   round(avg1, 1), "p2Avg": round(avg2, 1),
+                "p1Best":  round(max(d1.values(), default=0), 1),
+                "p2Best":  round(max(d2.values(), default=0), 1),
+                "change":  round((s2 - s1) / s1 * 100, 1) if s1 else None,
+                "days1":   len(d1), "days2": len(d2),
+            },
+        })
+    except Exception as e:
+        log.error("Period compare failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# AI Chatbot
+# ---------------------------------------------------------------------------
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+@app.route("/api/chat", methods=["POST"])
+@require_role()
+def chat_endpoint(current_user):
+    """Fleet-aware AI assistant powered by Claude."""
+    if not ANTHROPIC_API_KEY:
+        return jsonify({"error": "AI chatbot not configured — add ANTHROPIC_API_KEY to .env"}), 503
+
+    data     = request.get_json(silent=True) or {}
+    question = (data.get("question") or data.get("message") or "").strip()
+    if not question:
+        return jsonify({"error": "question is required"}), 400
+
+    try:
+        import anthropic as ant
+
+        plants = generate_demo_data() if (USE_DEMO or not SUNGROW_APPKEY) else client.get_all_plants_summary()
+        plants = _filter_plants_for_user(plants, current_user)
+
+        total_cap    = sum(p.get("capacity", 0) for p in plants)
+        today_energy = sum(p.get("todayEnergy", 0) for p in plants)
+        online       = sum(1 for p in plants if p.get("status") == "online")
+        offline      = sum(1 for p in plants if p.get("status") == "offline")
+        active       = [p for p in plants if p.get("performanceRatio")]
+        avg_pr       = sum(p["performanceRatio"] for p in active) / len(active) if active else None
+        total_alerts = sum(len(p.get("errors", [])) for p in plants)
+
+        plant_list = [{
+            "name": p.get("name"), "city": p.get("city"),
+            "kWp": p.get("capacity"), "status": p.get("status"),
+            "grade": p.get("grade"), "pr": p.get("performanceRatio"),
+            "today_kWh": p.get("todayEnergy"), "alerts": len(p.get("errors", [])),
+        } for p in plants]
+
+        system_msg = f"""You are SolarBull AI — an expert solar energy analyst for SolarBull Energy's fleet monitoring platform in India.
+Answer concisely with specific data. Give actionable recommendations.
+
+FLEET SUMMARY (live data):
+- Plants: {len(plants)} | Capacity: {total_cap:.0f} kWp
+- Online: {online} | Offline: {offline}
+- Today generation: {today_energy:.0f} kWh
+- Fleet avg PR: {f"{avg_pr*100:.1f}%" if avg_pr else "N/A"}
+- Active alerts: {total_alerts}
+- Tariff: ₹{TARIFF_PER_KWH}/kWh | CO₂ factor: {CO2_KG_PER_KWH} kg/kWh
+
+PLANT DATA (top 30):
+{json.dumps(plant_list[:30], default=str)}
+
+Guidelines: Use specific numbers. Flag plants needing attention. Be concise (3-5 sentences unless asked for more detail)."""
+
+        ant_client = ant.Anthropic(api_key=ANTHROPIC_API_KEY)
+        resp       = ant_client.messages.create(
+            model="claude-opus-4-6", max_tokens=1024,
+            system=system_msg,
+            messages=[{"role": "user", "content": question}],
+        )
+        return jsonify({"answer": resp.content[0].text})
+
+    except Exception as e:
+        log.error("Chat failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 # Legacy Sungrow login (kept for compatibility — credentials come from .env in normal use)
 @app.route("/api/login", methods=["POST"])
 def api_legacy_login():

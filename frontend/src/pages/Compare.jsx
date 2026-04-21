@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { usePlants } from "../context/PlantContext.jsx";
 import { GradeBadge, StatusBadge } from "../components/Badge.jsx";
 import { fmt, fmtDec, fmtPct, rupee } from "../utils/format.js";
@@ -11,17 +11,46 @@ import {
 
 const CHART_PALETTE = ["#F7941D", "#1E5BA6", "#0E9B65", "#8B5CF6", "#DC2626", "#0891B2"];
 
+// Haversine distance in km
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
 export default function Compare() {
   const { plants: allPlants, loading, fetchPlants } = usePlants();
-  const [selected,  setSelected]  = useState([]);
-  const [search,    setSearch]    = useState("");
+  const [selected,    setSelected]    = useState([]);
+  const [search,      setSearch]      = useState("");
+  const [geoMode,     setGeoMode]     = useState("none"); // none | city | radius
+  const [geoCity,     setGeoCity]     = useState("");
+  const [geoRadius,   setGeoRadius]   = useState("50");
+  const [geoRef,      setGeoRef]      = useState("");  // reference plant id for radius
 
   useEffect(() => { fetchPlants(); }, []);
 
   const plants = allPlants.filter((p) => selected.includes(p.id));
-  const filtered = search
-    ? allPlants.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
-    : allPlants;
+
+  const cities = useMemo(() => [...new Set(allPlants.map((p) => p.city).filter(Boolean))].sort(), [allPlants]);
+
+  const filtered = useMemo(() => {
+    let f = allPlants;
+    if (search)               f = f.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()));
+    if (geoMode === "city" && geoCity)    f = f.filter((p) => (p.city||"").toLowerCase().includes(geoCity.toLowerCase()));
+    if (geoMode === "radius" && geoRef) {
+      const ref = allPlants.find((p) => p.id === geoRef);
+      if (ref && ref.latitude && ref.longitude) {
+        const km = parseFloat(geoRadius) || 50;
+        f = f.filter((p) => {
+          if (!p.latitude || !p.longitude) return false;
+          return haversine(parseFloat(ref.latitude), parseFloat(ref.longitude), parseFloat(p.latitude), parseFloat(p.longitude)) <= km;
+        });
+      }
+    }
+    return f;
+  }, [allPlants, search, geoMode, geoCity, geoRef, geoRadius]);
 
   const toggle = (id) => {
     setSelected((prev) =>
@@ -88,9 +117,37 @@ export default function Compare() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search…"
+              placeholder="Search by name…"
               style={{ width: "100%", marginBottom: 10, fontSize: 12 }}
             />
+
+            {/* Geographic filter */}
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Filter by Location</div>
+              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                {[["none","All"],["city","City"],["radius","Radius"]].map(([v,l]) => (
+                  <button key={v} onClick={() => setGeoMode(v)} style={{ flex: 1, fontSize: 10, padding: "4px 0", background: geoMode === v ? "var(--sb-blue)" : "var(--color-background-secondary)", color: geoMode === v ? "#fff" : "var(--color-text-secondary)", border: "none", borderRadius: 4, fontWeight: 500 }}>{l}</button>
+                ))}
+              </div>
+              {geoMode === "city" && (
+                <input value={geoCity} onChange={(e) => setGeoCity(e.target.value)} placeholder="City name…" style={{ fontSize: 11, marginBottom: 4 }} list="cmp-cities" />
+              )}
+              {geoMode === "radius" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <select value={geoRef} onChange={(e) => setGeoRef(e.target.value)} style={{ fontSize: 11 }}>
+                    <option value="">Reference plant…</option>
+                    {allPlants.filter((p) => p.latitude && p.longitude).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="number" value={geoRadius} onChange={(e) => setGeoRadius(e.target.value)} style={{ fontSize: 11, width: "70px" }} min="1" max="500" />
+                    <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>km radius</span>
+                  </div>
+                </div>
+              )}
+              <datalist id="cmp-cities">{cities.map((c) => <option key={c} value={c} />)}</datalist>
+              {(geoMode !== "none") && <div style={{ fontSize: 10, color: "var(--sb-blue)", marginTop: 4 }}>{filtered.length} plants in range</div>}
+            </div>
+
             {loading ? (
               <div style={{ textAlign: "center", padding: 20, color: "var(--color-text-tertiary)" }}>Loading…</div>
             ) : (
