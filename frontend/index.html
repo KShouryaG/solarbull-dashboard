@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SolarBull Energy Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       :root {
@@ -16,9 +19,9 @@
         --sb-blue-light:    #EBF2FC;
 
         /* Background */
-        --color-background-page:      #F4F6FA;
+        --color-background-page:      #FAF7F2;
         --color-background-primary:   #FFFFFF;
-        --color-background-secondary: #F0F2F7;
+        --color-background-secondary: #F5F0E6;
         --color-background-sidebar:   #0F2A5C;
         --color-background-success:   #E8F8F1;
         --color-background-warning:   #FFF8E8;
@@ -37,10 +40,10 @@
         --color-text-sidebar-active: #FFFFFF;
 
         /* Border */
-        --color-border-light:   #E5E7EB;
-        --color-border-medium:  #D1D5DB;
-        --color-border-tertiary: #E5E7EB;
-        --color-border-secondary: #D1D5DB;
+        --color-border-light:   #EAE5DB;
+        --color-border-medium:  #D5CEBC;
+        --color-border-tertiary: #EAE5DB;
+        --color-border-secondary: #D5CEBC;
 
         /* Grade colors */
         --color-grade-excellent: #0E9B65;
@@ -61,7 +64,7 @@
       }
 
       body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         background: var(--color-background-page);
         color: var(--color-text-primary);
         font-size: 14px;
@@ -128,6 +131,16 @@
       @media (max-width: 1099px) and (min-width: 768px) {
         main { margin-left: 64px !important; }
       }
+      /* Tablet: collapse 1.7fr sidebar grid */
+      @media (max-width: 1099px) {
+        .dashboard-main-grid {
+          grid-template-columns: 1fr !important;
+        }
+        .kpi-grid-4 {
+          grid-template-columns: repeat(2, 1fr) !important;
+        }
+      }
+
       /* Mobile: no sidebar offset */
       @media (max-width: 767px) {
         main { margin-left: 0 !important; }
