@@ -127,7 +127,8 @@ export default function Dashboard() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Fleet Overview</h1>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>
-            {loading ? "Loading…" : `${plants.length} plants`} · Last updated {lastRefreshed.toLocaleTimeString("en-IN")}
+            {/* SOLARBULL-IMPROVEMENT: Task 9 — "plants" → "sites" in display text */}
+          {loading ? "Loading…" : `${plants.length} sites`} · Last updated {lastRefreshed.toLocaleTimeString("en-IN")}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -149,7 +150,7 @@ export default function Dashboard() {
 
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 24 }}>
-        <MetricCard label="Total Capacity"  value={`${fmt(Math.round(totals.totalCap))} kWp`}  sub={`${plants.length} plants`} icon="⚡" />
+        <MetricCard label="Total Capacity"  value={`${fmt(Math.round(totals.totalCap))} kWp`}  sub={`${plants.length} sites`} icon="⚡" />
         <MetricCard label="Live Power"      value={totals.totalPower !== null ? `${fmt(Math.round(totals.totalPower))} kW` : "—"} accent="var(--sb-orange)" sub="Real-time output" icon="☀" />
         <MetricCard label="Today Generated" value={`${fmt(Math.round(totals.todayGen))} kWh`}  sub="Since midnight" icon="📈" />
         <MetricCard label="Month Generated" value={totals.monthGen !== null ? `${fmt(Math.round(totals.monthGen))} kWh` : "—"} sub={totals.monthRev !== null ? `Rev: ${rupee(totals.monthRev)}` : "Not in API"} icon="📅" />
@@ -159,8 +160,9 @@ export default function Dashboard() {
       </div>
 
       {/* Tabs */}
+      {/* SOLARBULL-IMPROVEMENT: Task 9 — "Plants" → "Sites" in tab label */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--color-border-light)", marginBottom: 20 }}>
-        {[["overview", "Plants"], ["alerts", `Alerts (${totals.totalErrors})`], ["charts", "Charts"]].map(([key, label]) => (
+        {[["overview", "Sites"], ["alerts", `Alerts (${totals.totalErrors})`], ["charts", "Charts"]].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             padding: "10px 20px", fontSize: 13, fontWeight: tab === key ? 600 : 400,
             color: tab === key ? "var(--sb-blue)" : "var(--color-text-secondary)",
@@ -175,8 +177,13 @@ export default function Dashboard() {
       {/* Tab: Overview */}
       {tab === "overview" && (
         <>
+          {/* SOLARBULL-IMPROVEMENT: Task 8 — grade legend */}
+          <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 10 }}>
+            PR grade: <strong style={{ color: "#0E9B65" }}>Excellent ≥80%</strong> · <strong style={{ color: "#1E5BA6" }}>Good ≥70%</strong> · <strong style={{ color: "#F7941D" }}>Fair ≥55%</strong> · <strong style={{ color: "#DC2626" }}>Poor &lt;55%</strong>
+          </div>
+          {/* SOLARBULL-IMPROVEMENT: Task 9 — "Search plants" → "Search sites" */}
           <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search plants..." style={{ maxWidth: 220 }} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search sites..." style={{ maxWidth: 220 }} />
             <select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ width: "auto" }}>
               <option value="all">All ({plants.length})</option>
               <option value="online">Online ({totals.online})</option>
@@ -238,18 +245,31 @@ export default function Dashboard() {
               </div>
               {filtered.length !== plants.length && (
                 <div style={{ marginTop: 10, fontSize: 12, color: "var(--sb-blue)", fontWeight: 500 }}>
-                  Showing {filtered.length} of {plants.length} plants
+                  Showing {filtered.length} of {plants.length} sites
                 </div>
               )}
             </div>
           )}
 
+          {/* SOLARBULL-IMPROVEMENT: Task 6 — skeleton cards while loading */}
           {loading && !plants.length ? (
-            <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-tertiary)" }}>Loading plants...</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} style={{ background: "var(--color-background-primary)", border: "1px solid var(--color-border-light)", borderRadius: "var(--border-radius-lg)", padding: 16, boxShadow: "var(--shadow-sm)" }}>
+                  <div className="skeleton" style={{ height: 14, width: "70%", marginBottom: 8 }} />
+                  <div className="skeleton" style={{ height: 11, width: "45%", marginBottom: 16 }} />
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 16 }}>
+                    {[1,2,3].map((j) => <div key={j} className="skeleton" style={{ height: 32 }} />)}
+                  </div>
+                  <div className="skeleton" style={{ height: 22, width: "40%" }} />
+                </div>
+              ))}
+            </div>
           ) : (
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
               {filtered.map((p) => <PlantCard key={p.id} plant={p} />)}
-              {!filtered.length && <div style={{ padding: 24, color: "var(--color-text-tertiary)", gridColumn: "1/-1" }}>No plants match filter.</div>}
+              {/* SOLARBULL-IMPROVEMENT: Task 9 — "No plants" → "No sites" */}
+              {!filtered.length && <div style={{ padding: 24, color: "var(--color-text-tertiary)", gridColumn: "1/-1" }}>No sites match filter.</div>}
             </div>
           )}
         </>

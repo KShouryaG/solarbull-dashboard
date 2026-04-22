@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { getInverters, getPeriodCompare, getPowerCurve, getPlantKPIs, getMonthlyChart } from "../api.js";
+import { getInverters, getPeriodCompare, getPowerCurve, getPlantKPIs, getMonthlyChart, getPlantHistory } from "../api.js";
 import { usePlants } from "../context/PlantContext.jsx";
 import MetricCard from "../components/MetricCard.jsx";
 import { StatusBadge, GradeBadge, SeverityBadge } from "../components/Badge.jsx";
@@ -121,9 +121,9 @@ export default function PlantDetail() {
 
   return (
     <div className="fade-in">
-      {/* Breadcrumb */}
+      {/* Breadcrumb — SOLARBULL-IMPROVEMENT: Task 9 "Plants" → removed, kept as Fleet */}
       <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 16 }}>
-        <span style={{ cursor: "pointer", color: "var(--sb-blue)" }} onClick={() => navigate("/")}>Dashboard</span>
+        <span style={{ cursor: "pointer", color: "var(--sb-blue)" }} onClick={() => navigate("/")}>Fleet Overview</span>
         <span style={{ margin: "0 6px" }}>›</span>
         <span>{plant.name}</span>
       </div>
@@ -160,7 +160,14 @@ export default function PlantDetail() {
         <MetricCard label="Perf. Ratio"    value={plant.performanceRatio != null ? fmtPct(plant.performanceRatio) : "—"}
           accent={plant.performanceRatio ? GRADE_COLORS[plant.grade] : undefined} icon="📊"
           sub={<span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>estimated</span>} />
-        <MetricCard label="Revenue Today"
+        {/* SOLARBULL-IMPROVEMENT: Task 10 — "Est. revenue today" with tooltip */}
+        <MetricCard
+          label={
+            <span title="Estimated based on your configured tariff rate (₹/kWh). Not actual billed revenue.">
+              {kpis?.todayIncomeActual != null ? "Revenue Today" : "Est. revenue today"}{" "}
+              <span title="Estimated based on your configured tariff rate (₹/kWh). Not actual billed revenue." style={{ cursor: "help", color: "var(--color-text-tertiary)", fontSize: 11 }}>ⓘ</span>
+            </span>
+          }
           value={kpis?.todayIncomeActual != null ? rupee(Math.round(kpis.todayIncomeActual)) : rupee(Math.round(plant.revenueToday || 0))}
           icon="₹"
           sub={kpis?.todayIncomeActual != null ? <span style={{ fontSize: 10, color: "#0E9B65" }}>from iSolarCloud</span> : null} />
@@ -558,6 +565,10 @@ function ChartsTab({ plant, historyData }) {
   const [monthlyData,   setMonthlyData]   = useState(null);
   const [monthLoading,  setMonthLoading]  = useState(true);
   const [activeChart,   setActiveChart]   = useState("power");
+  // SOLARBULL-IMPROVEMENT: Task 11 — 7D/30D/90D history toggle
+  const [historyDays,   setHistoryDays]   = useState(7);
+  const [historyFetch,  setHistoryFetch]  = useState(null);
+  const [histLoading,   setHistLoading]   = useState(false);
 
   useEffect(() => {
     getPowerCurve(plant.id)
@@ -569,6 +580,16 @@ function ChartsTab({ plant, historyData }) {
       .catch(() => {})
       .finally(() => setMonthLoading(false));
   }, [plant.id]);
+
+  // Fetch history when days selection changes
+  useEffect(() => {
+    if (activeChart !== "7day") return;
+    setHistLoading(true);
+    getPlantHistory(plant.id, historyDays)
+      .then((d) => setHistoryFetch(d?.data || []))
+      .catch(() => setHistoryFetch([]))
+      .finally(() => setHistLoading(false));
+  }, [plant.id, historyDays, activeChart]);
 
   const pcData = (powerCurve?.data || []).map((d) => ({
     name: d.ts?.slice(11, 16) || d.ts,
@@ -664,33 +685,52 @@ function ChartsTab({ plant, historyData }) {
         ) : <div style={{ textAlign: "center", color: "var(--color-text-tertiary)", padding: 40 }}>No data</div>
       ), monthLoading)}
 
-      {activeChart === "7day" && card("7-Day Generation History", (
-        historyData.length ? (
-          <>
-            <ResponsiveContainer width="100%" height={260}>
-              <BarChart data={historyData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-light)" vertical={false} />
-                <XAxis dataKey="date" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
-                <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} tickFormatter={(v) => `${v}`} />
-                <Tooltip formatter={(v) => [`${v} kWh`, "Energy"]} />
-                <Bar dataKey="energy" fill="var(--sb-orange)" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginTop: 16 }}>
-              {[
-                { label: "7-Day Total",   value: `${fmt(Math.round(historyData.reduce((s, d) => s + d.energy, 0)))} kWh` },
-                { label: "Daily Average", value: `${fmt(Math.round(historyData.reduce((s, d) => s + d.energy, 0) / 7))} kWh` },
-                { label: "Best Day",      value: `${fmt(Math.max(...historyData.map((d) => d.energy)))} kWh` },
-              ].map(({ label, value }) => (
-                <div key={label} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "12px 16px", textAlign: "center" }}>
-                  <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>{label}</div>
-                  <div style={{ fontSize: 16, fontWeight: 700 }}>{value}</div>
-                </div>
-              ))}
-            </div>
-          </>
-        ) : <div style={{ color: "var(--color-text-tertiary)", textAlign: "center", padding: 40 }}>No history data</div>
-      ), false)}
+      {/* SOLARBULL-IMPROVEMENT: Task 11 — 7D/30D/90D history toggle */}
+      {activeChart === "7day" && card(
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <span>Generation History</span>
+          <div style={{ display: "flex", gap: 4 }}>
+            {[7, 30, 90].map((d) => (
+              <button key={d} onClick={() => setHistoryDays(d)} style={{
+                padding: "4px 10px", fontSize: 11, fontWeight: historyDays === d ? 700 : 400,
+                background: historyDays === d ? "var(--sb-orange)" : "var(--color-background-secondary)",
+                color: historyDays === d ? "#fff" : "var(--color-text-secondary)",
+                border: "none", borderRadius: 6, cursor: "pointer",
+              }}>{d}D</button>
+            ))}
+          </div>
+        </div>,
+        (() => {
+          const data = historyFetch || historyData;
+          return data.length ? (
+            <>
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={data} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-light)" vertical={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: historyDays > 7 ? 9 : 11 }} tickLine={false} axisLine={false}
+                    interval={historyDays > 30 ? 6 : historyDays > 7 ? 2 : 0} />
+                  <YAxis tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                  <Tooltip formatter={(v) => [`${v} kWh`, "Energy"]} />
+                  <Bar dataKey="energy" fill="var(--sb-orange)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 12, marginTop: 16 }}>
+                {[
+                  { label: `${historyDays}-Day Total`,  value: `${fmt(Math.round(data.reduce((s, d) => s + d.energy, 0)))} kWh` },
+                  { label: "Daily Average", value: `${fmt(Math.round(data.reduce((s, d) => s + d.energy, 0) / data.length))} kWh` },
+                  { label: "Best Day",      value: `${fmt(Math.max(...data.map((d) => d.energy)))} kWh` },
+                ].map(({ label, value }) => (
+                  <div key={label} style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "12px 16px", textAlign: "center" }}>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: 16, fontWeight: 700 }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : <div style={{ color: "var(--color-text-tertiary)", textAlign: "center", padding: 40 }}>No history data</div>;
+        })(),
+        histLoading
+      )}
 
       {activeChart === "radar" && card("Performance Radar", (
         <ResponsiveContainer width="100%" height={300}>

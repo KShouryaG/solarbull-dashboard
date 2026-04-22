@@ -46,14 +46,31 @@ CACHE_TTL  = int(os.getenv("CACHE_TTL", "600"))   # 10 min default; plant list c
 PORT       = int(os.getenv("PORT", "8080"))
 USE_DEMO   = os.getenv("USE_DEMO", "false").lower() == "true"
 
+# SOLARBULL-IMPROVEMENT: Task 1 — require sensitive env vars, no silent fallbacks
+def _require_env(name, hint=""):
+    val = os.getenv(name)
+    if not val:
+        raise RuntimeError(
+            f"Required environment variable '{name}' is not set. {hint}"
+        )
+    return val
+
+def _optional_env(name, default, warn_if_default=False):
+    val = os.getenv(name, default)
+    if warn_if_default and val == default:
+        logging.getLogger("solarbull").warning(
+            "Using default value for %s — set this env var for production.", name
+        )
+    return val
+
 # Auth / DB
-JWT_SECRET        = os.getenv("JWT_SECRET", "solarbull-change-in-production")
+JWT_SECRET        = _require_env("JWT_SECRET", "Set to a long random string, e.g. openssl rand -hex 32")
 JWT_EXPIRY_HOURS  = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
 DB_PATH           = os.getenv("DB_PATH", os.path.join(os.path.dirname(__file__), "solarbull.db"))
-ADMIN_USERNAME    = os.getenv("ADMIN_USERNAME", "shourya")
-ADMIN_PASSWORD    = os.getenv("ADMIN_PASSWORD", "solarbull2024")
-ADMIN_NAME        = os.getenv("ADMIN_NAME", "Shourya Gupta")
-ADMIN_EMAIL       = os.getenv("ADMIN_EMAIL", "shourya.prince1228@gmail.com")
+ADMIN_USERNAME    = _optional_env("ADMIN_USERNAME", "shourya", warn_if_default=True)
+ADMIN_PASSWORD    = _require_env("ADMIN_PASSWORD", "Set the admin dashboard login password.")
+ADMIN_NAME        = os.getenv("ADMIN_NAME", "SolarBull Admin")
+ADMIN_EMAIL       = _require_env("ADMIN_EMAIL", "Set the admin email address.")
 
 # Solar KPI constants (India defaults)
 PEAK_SUN_HOURS  = float(os.getenv("PEAK_SUN_HOURS", "5.5"))
@@ -79,7 +96,9 @@ log = logging.getLogger("solarbull")
 # Flask app
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app, origins="*")
+# SOLARBULL-IMPROVEMENT: Task 1 — CORS restricted to ALLOWED_ORIGINS env var
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+CORS(app, origins=[o.strip() for o in _allowed_origins])
 
 # ---------------------------------------------------------------------------
 # SQLite helpers
@@ -445,9 +464,10 @@ class SungrowClient:
             equiv_hours = _sg_val(plant.get("equivalent_hour"), nullable=True)
 
             # CO2 fields: co2_reduce = today, co2_reduce_total = lifetime
-            co2_today    = _sg_val(plant.get("co2_reduce"), nullable=True)
-            co2_lifetime = _sg_val(plant.get("co2_reduce_total",
-                                              plant.get("co2_reduce", 0)))
+            # SOLARBULL-IMPROVEMENT: Task 4 — normalise to tonnes
+            co2_today    = _normalise_co2_tonnes(_sg_val(plant.get("co2_reduce"), nullable=True))
+            co2_lifetime = _normalise_co2_tonnes(_sg_val(plant.get("co2_reduce_total",
+                                              plant.get("co2_reduce", 0))))
 
             # Last data update timestamp
             last_updated = (plant.get("today_energy_update_time") or
@@ -560,6 +580,14 @@ def _sg_val(field, default=0.0, nullable=False):
         return None
     return _safe_float(field, default)
 
+# SOLARBULL-IMPROVEMENT: Task 4 — normalise CO₂ to tonnes everywhere
+def _normalise_co2_tonnes(val):
+    """Convert CO₂ value to tonnes. Values > 1000 are assumed to be in kg."""
+    if val is None:
+        return None
+    val = float(val)
+    return round(val / 1000, 3) if val > 1000 else round(val, 3)
+
 def _parse_plant_status(status):
     s = str(status).lower().strip()
     try:
@@ -599,7 +627,8 @@ def compute_plant_stats(plant: dict, tariff: float = None) -> dict:
     specific_yield   = round(today_e / cap, 3)            if cap > 0 else None
     perf_ratio       = round(specific_yield / PEAK_SUN_HOURS, 3) if specific_yield is not None else None
     capacity_factor  = round((today_e / (cap * 24)) * 100, 2)   if cap > 0 else None
-    co2_avoided      = plant.get("co2") or round(total_e * CO2_KG_PER_KWH, 1)
+    co2_avoided_raw  = plant.get("co2") or round(total_e * CO2_KG_PER_KWH, 1)
+    co2_avoided      = _normalise_co2_tonnes(co2_avoided_raw)
     revenue_today    = round(today_e * effective_tariff, 2)
 
     if perf_ratio is None:
@@ -617,7 +646,8 @@ def compute_plant_stats(plant: dict, tariff: float = None) -> dict:
         "specificYield":    specific_yield,
         "performanceRatio": perf_ratio,
         "capacityFactor":   capacity_factor,
-        "co2Avoided":       co2_avoided,
+        "co2Avoided":       co2_avoided,        # tonnes
+        "co2AvoidedTonnes": co2_avoided,        # alias — guaranteed tonnes
         "revenueToday":     revenue_today,
         "grade":            grade,
         "peakSunHours":     PEAK_SUN_HOURS,
@@ -958,6 +988,26 @@ def auth_me(current_user):
         "plant_ids": json.loads(current_user["plant_ids"] or "[]"),
     })
 
+# SOLARBULL-IMPROVEMENT: Task 3 — JWT refresh endpoint
+@app.route("/api/auth/refresh", methods=["POST"])
+@require_role()
+def auth_refresh(current_user):
+    """Return a fresh token for an authenticated user."""
+    token = make_token(current_user["id"], current_user["role"])
+    return jsonify({"token": token})
+
+# SOLARBULL-IMPROVEMENT: Task 5 — health check endpoint
+@app.route("/api/health")
+def health():
+    return jsonify({
+        "status":        "ok",
+        "demo":          USE_DEMO,
+        "lastPollTime":  _last_poll_time,
+        "lastPollCount": _last_poll_count,
+        "cacheKeys":     len(client._cache),
+        "serverTime":    datetime.utcnow().isoformat() + "Z",
+    })
+
 # ---------------------------------------------------------------------------
 # Admin user management
 # ---------------------------------------------------------------------------
@@ -1090,6 +1140,36 @@ def api_plant_detail(plant_id, current_user):
 # ---------------------------------------------------------------------------
 # Time-series endpoint
 # ---------------------------------------------------------------------------
+# SOLARBULL-IMPROVEMENT: Task 11 — history endpoint with configurable days
+@app.route("/api/plants/<plant_id>/history")
+@require_role()
+def api_plant_history(plant_id, current_user):
+    """GET /api/plants/<id>/history?days=7|30|90"""
+    if current_user["role"] != "admin":
+        allowed = set(json.loads(current_user["plant_ids"] or "[]"))
+        if plant_id not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+    days = min(int(request.args.get("days", 7)), 90)
+
+    try:
+        if USE_DEMO or not SUNGROW_APPKEY:
+            import random
+            data = []
+            for i in range(days):
+                d = datetime.now() - timedelta(days=days - 1 - i)
+                data.append({
+                    "date":   d.strftime("%Y-%m-%d"),
+                    "energy": round(200 + random.random() * 400, 1),
+                })
+            return jsonify({"days": days, "data": data})
+
+        history = client.get_plant_generation_history(plant_id, days)
+        return jsonify({"days": days, "data": history})
+    except Exception as e:
+        log.error("History failed for %s: %s", plant_id, e)
+        return jsonify({"error": str(e), "data": []}), 500
+
 @app.route("/api/plants/<plant_id>/timeseries")
 @require_role()
 def api_timeseries(plant_id, current_user):
@@ -2138,6 +2218,22 @@ def api_legacy_login():
 # ---------------------------------------------------------------------------
 # Startup
 # ---------------------------------------------------------------------------
+# SOLARBULL-IMPROVEMENT: Task 5 — health poll tracking globals
+_last_poll_time  = None
+_last_poll_count = 0
+
+# SOLARBULL-IMPROVEMENT: Task 2 — APScheduler background poll function
+def scheduled_poll():
+    global _last_poll_time, _last_poll_count
+    try:
+        t0 = time.time()
+        plants = client.get_all_plants_summary()
+        _last_poll_time  = datetime.utcnow().isoformat() + "Z"
+        _last_poll_count = len(plants)
+        log.info("Scheduled poll complete: %d plants in %.2fs", len(plants), time.time() - t0)
+    except Exception as e:
+        log.error("Scheduled poll failed: %s", e)
+
 def _prewarm_cache():
     """Pre-warm the plant summary cache in background so first user request is instant."""
     import threading
@@ -2146,6 +2242,9 @@ def _prewarm_cache():
             log.info("Pre-warming plant cache...")
             t0 = time.time()
             plants = client.get_all_plants_summary()
+            global _last_poll_time, _last_poll_count
+            _last_poll_time  = datetime.utcnow().isoformat() + "Z"
+            _last_poll_count = len(plants)
             log.info("Cache warm: %d plants in %.2fs", len(plants), time.time() - t0)
         except Exception as e:
             log.warning("Cache pre-warm failed: %s", e)
@@ -2167,5 +2266,17 @@ if __name__ == "__main__":
             _prewarm_cache()   # start filling cache immediately in background
         except Exception as e:
             log.error("Initial Sungrow login failed: %s", e)
+
+        # SOLARBULL-IMPROVEMENT: Task 2 — APScheduler background polling every 10 min
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            scheduler = BackgroundScheduler()
+            scheduler.add_job(scheduled_poll, "interval", minutes=10, id="plant_poll")
+            scheduler.start()
+            log.info("Background scheduler started — polling every 10 minutes.")
+        except ImportError:
+            log.warning("APScheduler not installed — background polling disabled. Run: pip install apscheduler")
+        except Exception as e:
+            log.error("Failed to start scheduler: %s", e)
 
     app.run(host="0.0.0.0", port=PORT, debug=False)

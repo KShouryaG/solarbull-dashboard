@@ -32,8 +32,12 @@ async function request(method, path, body) {
   });
 
   if (res.status === 401) {
-    // Only treat as "session expired" if a token was present (it expired/was invalid)
-    // Unauthenticated requests (no token) are handled by ProtectedRoute
+    const errData = await res.json().catch(() => ({}));
+    // On the login endpoint, a 401 means wrong credentials — surface the real message
+    if (path.includes("/auth/login")) {
+      throw new Error(errData.error || "Invalid credentials");
+    }
+    // For all other endpoints, a 401 means the session token expired
     if (token) {
       clearToken();
       window.dispatchEvent(new Event("auth:logout"));
@@ -108,3 +112,9 @@ export const getPlantKPIs = (plantId) => get(`/api/plants/${plantId}/kpis`);
 
 // Monthly & yearly chart data
 export const getMonthlyChart = (plantId) => get(`/api/plants/${plantId}/monthly-chart`);
+
+// SOLARBULL-IMPROVEMENT: Task 11 — generation history with variable day range
+export const getPlantHistory = (plantId, days = 7) => get(`/api/plants/${plantId}/history?days=${days}`);
+
+// SOLARBULL-IMPROVEMENT: Task 7 — health / last-sync status (no auth required)
+export const getHealth = () => fetch(`${API_BASE}/api/health`).then((r) => r.json()).catch(() => null);

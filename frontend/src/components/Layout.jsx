@@ -2,6 +2,45 @@ import { useState, useEffect } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar.jsx";
 import Chatbot from "./Chatbot.jsx";
+import { getHealth } from "../api.js";
+
+// SOLARBULL-IMPROVEMENT: Task 7 — last-sync status indicator
+function SyncBadge() {
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    const update = () => getHealth().then(setHealth);
+    update();
+    const t = setInterval(update, 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!health) return null;
+
+  if (health.demo) return (
+    <span style={{ fontSize: 11, padding: "3px 8px", borderRadius: 99, background: "#EBF2FC", color: "#1E5BA6", fontWeight: 600 }}>
+      Demo mode
+    </span>
+  );
+
+  if (!health.lastPollTime) return (
+    <span style={{ fontSize: 11, padding: "3px 8px", borderRadius: 99, background: "#FFF8EE", color: "#92400E", fontWeight: 600 }}>
+      Never synced
+    </span>
+  );
+
+  const mins = Math.round((Date.now() - new Date(health.lastPollTime)) / 60_000);
+  const color = mins > 60 ? { bg: "#FEF0F0", text: "#DC2626" }
+              : mins > 20 ? { bg: "#FFF8EE", text: "#92400E" }
+              :              { bg: "#E8F8F1", text: "#065F46" };
+  const label = mins > 60 ? "Sync overdue" : `Synced ${mins}m ago`;
+
+  return (
+    <span style={{ fontSize: 11, padding: "3px 8px", borderRadius: 99, background: color.bg, color: color.text, fontWeight: 600 }}>
+      {label}
+    </span>
+  );
+}
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -73,6 +112,13 @@ export default function Layout() {
               ))}
             </button>
             <img src="/logo.png" alt="SolarBull" style={{ height: 28, filter: "none", objectFit: "contain" }} />
+            <div style={{ marginLeft: "auto" }}><SyncBadge /></div>
+          </div>
+        )}
+        {/* SOLARBULL-IMPROVEMENT: Task 7 — sync badge on desktop */}
+        {!isMobile && (
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+            <SyncBadge />
           </div>
         )}
 
