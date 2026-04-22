@@ -454,6 +454,10 @@ class SungrowClient:
             device_sn    = plant.get("device_sn", "")
 
             plant_status = _parse_plant_status(plant.get("ps_status", 1))
+            today_energy_val = _sg_val(plant.get("today_energy", 0))
+            # ps_status=0 at night is normal standby — treat as online if the plant generated today
+            if plant_status == "offline" and today_energy_val and today_energy_val > 0:
+                plant_status = "online"
 
             # Revenue: Sungrow stores income in rupees (卢比) or 万卢比 (10k rupees)
             today_income_raw = plant.get("today_income")
@@ -477,11 +481,11 @@ class SungrowClient:
                 "id":           pid,
                 "name":         plant.get("ps_name", f"Plant {pid}"),
                 "address":      plant.get("ps_location", ""),
-                "city":         plant.get("ps_location", ""),
+                "city":         _extract_city(plant.get("ps_location", "")),
                 "country":      plant.get("country", "IN"),
                 "capacity":     _sg_val(plant.get("total_capcity", 0)),
                 "status":       plant_status,
-                "todayEnergy":  _sg_val(plant.get("today_energy", 0)),
+                "todayEnergy":  today_energy_val,
                 "monthEnergy":  month_energy,
                 "totalEnergy":  _sg_val(plant.get("total_energy", 0)),
                 "currentPower": _sg_val(plant.get("curr_power", 0), nullable=True),
@@ -579,6 +583,20 @@ def _sg_val(field, default=0.0, nullable=False):
     if nullable and (field == "--" or field == ""):
         return None
     return _safe_float(field, default)
+
+def _extract_city(address):
+    """Extract city from a full address string like '47, Nandagiri Hills, Jubilee Hills, Hyderabad, Telangana 500033, India'."""
+    if not address:
+        return ""
+    # Remove postal code and country suffix, then take the last meaningful token
+    import re
+    cleaned = re.sub(r"\s*\d{5,6}\s*,?\s*", "", address)  # strip pin codes
+    cleaned = re.sub(r",?\s*(India|Pakistan|Bangladesh|Sri Lanka)\s*$", "", cleaned, flags=re.IGNORECASE)
+    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    # City is usually the part just before the state (second-to-last)
+    if len(parts) >= 2:
+        return parts[-2]
+    return parts[-1] if parts else address
 
 # SOLARBULL-IMPROVEMENT: Task 4 — normalise CO₂ to tonnes everywhere
 def _normalise_co2_tonnes(val):
@@ -1325,16 +1343,8 @@ def _generate_demo_timeseries(range_param):
     return data
 
 # ---------------------------------------------------------------------------
-# Misc routes (public / no auth needed for health)
+# Misc routes
 # ---------------------------------------------------------------------------
-@app.route("/api/health")
-def health():
-    return jsonify({
-        "status": "ok",
-        "mode": "demo" if USE_DEMO or not SUNGROW_APPKEY else "live",
-        "timestamp": datetime.now().isoformat(),
-    })
-
 @app.route("/api/errors")
 @require_role()
 def api_errors(current_user):
