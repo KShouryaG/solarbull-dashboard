@@ -34,7 +34,8 @@ export default function Analytics() {
   const [metric,    setMetric]    = useState("energy");
 
   const load = async (r) => {
-    setLoading(true);
+    // Don't block page if we already have data — refresh silently
+    if (!data) setLoading(true);
     try {
       const d = await getFleetAnalytics(r);
       setData(d);

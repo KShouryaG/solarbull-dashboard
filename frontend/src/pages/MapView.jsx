@@ -43,7 +43,8 @@ export default function MapView() {
   const totalPower = useMemo(() =>
     plants.reduce((s, p) => s + (p.currentPower ?? 0), 0), [plants]);
 
-  if (loading) return (
+  // Only show full-page spinner on first load (no data yet)
+  if (loading && !plants.length) return (
     <div style={{ display: "flex", justifyContent: "center", padding: 60 }}>
       <div style={{ width: 36, height: 36, border: "3px solid var(--color-border-light)", borderTopColor: "var(--sb-orange)", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
     </div>
@@ -86,6 +87,7 @@ export default function MapView() {
       {/* Map */}
       <div style={{ flex: 1, borderRadius: 12, overflow: "hidden", border: "1px solid var(--color-border-light)", boxShadow: "var(--shadow-sm)", minHeight: 480 }}>
         <MapContainer
+          key={center.join(",")}
           center={center}
           zoom={6}
           style={{ width: "100%", height: "100%" }}

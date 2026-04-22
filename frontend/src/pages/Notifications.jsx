@@ -12,8 +12,8 @@ export default function Notifications() {
   const [search,    setSearch]    = useState("");
   const [sortBy,    setSortBy]    = useState("severity");
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (force = false) => {
+    if (force) setLoading(true);
     try {
       const d = await getNotifications();
       setData(d);
@@ -51,7 +51,7 @@ export default function Notifications() {
             All active alarms and faults across your fleet
           </div>
         </div>
-        <button onClick={load} disabled={loading} style={{ background: "var(--sb-orange)", color: "#fff", border: "none", fontWeight: 600, padding: "8px 16px" }}>
+        <button onClick={() => load(true)} disabled={loading} style={{ background: "var(--sb-orange)", color: "#fff", border: "none", fontWeight: 600, padding: "8px 16px" }}>
           {loading ? "Loading…" : "↻ Refresh"}
         </button>
       </div>
@@ -101,7 +101,7 @@ export default function Notifications() {
       </div>
 
       {/* Alert list */}
-      {loading ? (
+      {loading && !data ? (
         <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-tertiary)" }}>
           <div style={{ width: 36, height: 36, border: "3px solid var(--color-border-light)", borderTopColor: "var(--sb-orange)", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 12px" }} />
           Loading alerts…

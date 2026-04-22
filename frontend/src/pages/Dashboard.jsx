@@ -40,12 +40,10 @@ export default function Dashboard() {
 
   useEffect(() => { load(); }, []);
 
-  // Load users for client filter (admin only)
+  // Load users for client filter — only once, only for admin
   useEffect(() => {
-    if (user?.role === "admin") {
-      getUsers().then(setUsers).catch(() => {});
-    }
-  }, [user]);
+    if (user?.role === "admin") getUsers().then(setUsers).catch(() => {});
+  }, [user?.id]); // dep on id (stable), not whole user object
 
   // Auto-refresh every 5 min
   useEffect(() => {

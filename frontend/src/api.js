@@ -1,4 +1,14 @@
 const TOKEN_KEY = "sb_token";
+const API_BASE  = import.meta.env.VITE_API_URL || "";
+
+// ── In-memory API cache (survives navigation, cleared on logout) ────────────
+const _cache = {};
+function _cachedGet(path, ttlMs = 5 * 60 * 1000) {
+  const hit = _cache[path];
+  if (hit && Date.now() - hit.ts < ttlMs) return Promise.resolve(hit.data);
+  return get(path).then((d) => { _cache[path] = { data: d, ts: Date.now() }; return d; });
+}
+export function clearApiCache() { Object.keys(_cache).forEach((k) => delete _cache[k]); }
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -15,7 +25,7 @@ async function request(method, path, body) {
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(path, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -62,11 +72,11 @@ export const deleteUser  = (id)         => del(`/api/admin/users/${id}`);
 // Cache
 export const clearCache = () => post("/api/cache/clear");
 
-// Fleet analytics
-export const getFleetAnalytics = (range = "30d") => get(`/api/fleet/analytics?range=${range}`);
+// Fleet analytics — cached 5 min per range
+export const getFleetAnalytics = (range = "30d") => _cachedGet(`/api/fleet/analytics?range=${range}`);
 
-// Notifications
-export const getNotifications = () => get("/api/notifications");
+// Notifications — cached 2 min
+export const getNotifications = () => _cachedGet("/api/notifications", 2 * 60 * 1000);
 
 // Comparison
 export const comparePlants = (ids) => get(`/api/plants/compare?ids=${ids.join(",")}`);
@@ -86,3 +96,15 @@ export const getPeriodCompare = (plantId, p) => {
 
 // AI Chatbot
 export const sendChatMessage = (question) => post("/api/chat", { question });
+
+// Power curve (intraday kW)
+export const getPowerCurve = (plantId, date) => {
+  const qs = date ? `?date=${date}` : "";
+  return get(`/api/plants/${plantId}/power-curve${qs}`);
+};
+
+// Delta KPIs (today vs yesterday, this month vs last)
+export const getPlantKPIs = (plantId) => get(`/api/plants/${plantId}/kpis`);
+
+// Monthly & yearly chart data
+export const getMonthlyChart = (plantId) => get(`/api/plants/${plantId}/monthly-chart`);

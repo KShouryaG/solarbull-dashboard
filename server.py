@@ -79,7 +79,7 @@ log = logging.getLogger("solarbull")
 # Flask app
 # ---------------------------------------------------------------------------
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins="*")
 
 # ---------------------------------------------------------------------------
 # SQLite helpers
@@ -434,27 +434,61 @@ class SungrowClient:
             device_model = plant.get("device_model_code", plant.get("device_model_name", ""))
             device_sn    = plant.get("device_sn", "")
 
+            plant_status = _parse_plant_status(plant.get("ps_status", 1))
+
+            # Revenue: Sungrow stores income in rupees (卢比) or 万卢比 (10k rupees)
+            today_income_raw = plant.get("today_income")
+            total_income_raw = plant.get("total_income")
+            year_income_raw  = plant.get("year_income")
+
+            # Equivalent hours = specific yield from Sungrow (kWh/kWp)
+            equiv_hours = _sg_val(plant.get("equivalent_hour"), nullable=True)
+
+            # CO2 fields: co2_reduce = today, co2_reduce_total = lifetime
+            co2_today    = _sg_val(plant.get("co2_reduce"), nullable=True)
+            co2_lifetime = _sg_val(plant.get("co2_reduce_total",
+                                              plant.get("co2_reduce", 0)))
+
+            # Last data update timestamp
+            last_updated = (plant.get("today_energy_update_time") or
+                            plant.get("curr_power_update_time") or "")
+
             summary = {
-                "id":          pid,
-                "name":        plant.get("ps_name", f"Plant {pid}"),
-                "city":        plant.get("ps_location", ""),
-                "country":     plant.get("country", "IN"),
-                "capacity":    _sg_val(plant.get("total_capcity", 0)),
-                "status":      _parse_plant_status(plant.get("ps_status", 1)),
-                "todayEnergy": _sg_val(plant.get("today_energy", 0)),
-                "monthEnergy": month_energy,
-                "totalEnergy": _sg_val(plant.get("total_energy", 0)),
+                "id":           pid,
+                "name":         plant.get("ps_name", f"Plant {pid}"),
+                "address":      plant.get("ps_location", ""),
+                "city":         plant.get("ps_location", ""),
+                "country":      plant.get("country", "IN"),
+                "capacity":     _sg_val(plant.get("total_capcity", 0)),
+                "status":       plant_status,
+                "todayEnergy":  _sg_val(plant.get("today_energy", 0)),
+                "monthEnergy":  month_energy,
+                "totalEnergy":  _sg_val(plant.get("total_energy", 0)),
                 "currentPower": _sg_val(plant.get("curr_power", 0), nullable=True),
-                "co2":         _sg_val(plant.get("co2_reduce_total", plant.get("co2_reduce", 0))),
-                "latitude":    plant.get("latitude", ""),
-                "longitude":   plant.get("longitude", ""),
-                "installDate": plant.get("install_date", ""),
+                "co2":          co2_lifetime,
+                "co2Today":     co2_today,
+                "latitude":     plant.get("latitude", ""),
+                "longitude":    plant.get("longitude", ""),
+                "installDate":  plant.get("install_date", ""),
+                "lastUpdated":  last_updated,
+                # Revenue from iSolarCloud (actual configured tariff)
+                "todayIncomeActual": _sg_val(today_income_raw, nullable=True),
+                "totalIncomeActual": _sg_val(total_income_raw, nullable=True),
+                "yearIncomeActual":  _sg_val(year_income_raw, nullable=True),
+                # Specific yield (equivalent sun hours)
+                "equivalentHours": equiv_hours,
+                # Fault/alarm counts
+                "alarmCount":   plant.get("alarm_count", 0),
+                "faultCount":   plant.get("fault_count", 0),
+                "faultStatus":  plant.get("ps_fault_status"),
+                # Grid
+                "gridConnected": plant.get("grid_connection_status") == 1,
                 "devices": [{
                     "deviceSn":   device_sn,
                     "datalogSn":  plant.get("communication_dev_sn", ""),
                     "deviceType": "Inverter",
                     "model":      device_model,
-                    "status":     _parse_plant_status(plant.get("ps_status", 1)),
+                    "status":     plant_status,
                     "lastUpdate": plant.get("rel_time", ""),
                 }] if device_sn or device_model else [],
                 "errors": [],
@@ -473,7 +507,11 @@ class SungrowClient:
                     "deviceSn":  a.get("device_sn", ""),
                 })
 
-            compute_plant_stats(summary)
+            # Per-plant tariff from API (ps_price_kwh field, if present in list data)
+            plant_tariff = _safe_float(plant.get("ps_price_kwh") or
+                                       plant.get("price_kwh") or
+                                       plant.get("electricity_price"), 0.0) or None
+            compute_plant_stats(summary, tariff=plant_tariff)
             summaries.append(summary)
 
         log.info("Plant summary built: %d plants in %.2fs", len(summaries), time.time() - t0)
@@ -547,17 +585,22 @@ def _parse_device_status(status):
 # ---------------------------------------------------------------------------
 # Computed KPIs
 # ---------------------------------------------------------------------------
-def compute_plant_stats(plant: dict) -> dict:
-    """Attach derived KPIs to a plant dict in-place. Returns the dict."""
+def compute_plant_stats(plant: dict, tariff: float = None) -> dict:
+    """Attach derived KPIs to a plant dict in-place. Returns the dict.
+    tariff: per-kWh rate in INR; if None, falls back to plant['tariffPerKwh'] then global TARIFF_PER_KWH.
+    """
     cap     = plant.get("capacity") or 0
     today_e = plant.get("todayEnergy") or 0
     total_e = plant.get("totalEnergy") or 0
+
+    # Per-plant tariff precedence: caller arg > plant field > global default
+    effective_tariff = tariff or plant.get("tariffPerKwh") or TARIFF_PER_KWH
 
     specific_yield   = round(today_e / cap, 3)            if cap > 0 else None
     perf_ratio       = round(specific_yield / PEAK_SUN_HOURS, 3) if specific_yield is not None else None
     capacity_factor  = round((today_e / (cap * 24)) * 100, 2)   if cap > 0 else None
     co2_avoided      = plant.get("co2") or round(total_e * CO2_KG_PER_KWH, 1)
-    revenue_today    = round(today_e * TARIFF_PER_KWH, 2)
+    revenue_today    = round(today_e * effective_tariff, 2)
 
     if perf_ratio is None:
         grade = "N/A"
@@ -578,13 +621,120 @@ def compute_plant_stats(plant: dict) -> dict:
         "revenueToday":     revenue_today,
         "grade":            grade,
         "peakSunHours":     PEAK_SUN_HOURS,
-        "tariffPerKwh":     TARIFF_PER_KWH,
+        "tariffPerKwh":     effective_tariff,
     })
     return plant
 
 # ---------------------------------------------------------------------------
 # Error code reference
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Sungrow inverter real-time point code → field name mapping
+# Based on Sungrow OpenAPI v2 (iSolarCloud) data point specifications
+# ---------------------------------------------------------------------------
+SUNGROW_INVERTER_POINTS = {
+    # AC Output
+    "p83001": ("activePower",    "kW"),
+    "p83002": ("reactivePower",  "kVAR"),
+    "p83003": ("apparentPower",  "kVA"),
+    "p83004": ("powerFactor",    ""),
+    "p83005": ("frequency",      "Hz"),
+    "p83006": ("voltageA",       "V"),
+    "p83007": ("voltageB",       "V"),
+    "p83008": ("voltageC",       "V"),
+    "p83009": ("voltageAB",      "V"),
+    "p83010": ("voltageBC",      "V"),
+    "p83011": ("voltageCA",      "V"),
+    "p83012": ("currentA",       "A"),
+    "p83013": ("currentB",       "A"),
+    "p83014": ("currentC",       "A"),
+    # DC Bus
+    "p83015": ("totalDCPower",   "kW"),
+    "p83016": ("busDCVoltage",   "V"),
+    # MPPT inputs (p83017/18 = MPPT1, p83019/20 = MPPT2 … up to MPPT8)
+    "p83017": ("mppt1Voltage",   "V"),
+    "p83018": ("mppt1Current",   "A"),
+    "p83019": ("mppt2Voltage",   "V"),
+    "p83020": ("mppt2Current",   "A"),
+    "p83021": ("mppt3Voltage",   "V"),
+    "p83022": ("mppt3Current",   "A"),
+    "p83023": ("mppt4Voltage",   "V"),
+    "p83024": ("mppt4Current",   "A"),
+    "p83025": ("mppt5Voltage",   "V"),
+    "p83026": ("mppt5Current",   "A"),
+    "p83027": ("mppt6Voltage",   "V"),
+    "p83028": ("mppt6Current",   "A"),
+    # Energy
+    "p83029": ("todayEnergy",    "kWh"),
+    "p83030": ("totalEnergy",    "kWh"),
+    # Thermal
+    "p83031": ("tempInternal",   "°C"),
+    "p83032": ("tempHeatsink",   "°C"),
+    "p83057": ("tempModule",     "°C"),
+    "p83058": ("tempAmbient",    "°C"),
+    # Weather sensor
+    "p83059": ("irradiance",     "W/m²"),
+    # Running state
+    "p83079": ("runningStatus",  ""),
+    "p83080": ("errorCode",      ""),
+    # String currents (p83033-p83048 → strings 1-16)
+    "p83033": ("str1Current",    "A"),
+    "p83034": ("str2Current",    "A"),
+    "p83035": ("str3Current",    "A"),
+    "p83036": ("str4Current",    "A"),
+    "p83037": ("str5Current",    "A"),
+    "p83038": ("str6Current",    "A"),
+    "p83039": ("str7Current",    "A"),
+    "p83040": ("str8Current",    "A"),
+    "p83041": ("str9Current",    "A"),
+    "p83042": ("str10Current",   "A"),
+    "p83043": ("str11Current",   "A"),
+    "p83044": ("str12Current",   "A"),
+    "p83045": ("str13Current",   "A"),
+    "p83046": ("str14Current",   "A"),
+    "p83047": ("str15Current",   "A"),
+    "p83048": ("str16Current",   "A"),
+    # String voltages (some models)
+    "p83049": ("str1Voltage",    "V"),
+    "p83050": ("str2Voltage",    "V"),
+    "p83051": ("str3Voltage",    "V"),
+    "p83052": ("str4Voltage",    "V"),
+    "p83053": ("str5Voltage",    "V"),
+    "p83054": ("str6Voltage",    "V"),
+    "p83055": ("str7Voltage",    "V"),
+    "p83056": ("str8Voltage",    "V"),
+}
+
+# Legacy / alternative field names some Sungrow API versions return
+_LEGACY_FIELD_MAP = {
+    "p_ac": "activePower",  "pac": "activePower",   "p_grid": "activePower",
+    "q_ac": "reactivePower",
+    "cos_phi": "powerFactor", "pf": "powerFactor",
+    "f_ac": "frequency",    "fac": "frequency",
+    "u_a": "voltageA",  "vac_a": "voltageA",
+    "u_b": "voltageB",  "vac_b": "voltageB",
+    "u_c": "voltageC",  "vac_c": "voltageC",
+    "u_ab": "voltageAB", "u_bc": "voltageBC", "u_ca": "voltageCA",
+    "i_a": "currentA",  "iac_a": "currentA",
+    "i_b": "currentB",  "iac_b": "currentB",
+    "i_c": "currentC",  "iac_c": "currentC",
+    "p_dc": "totalDCPower", "pdc": "totalDCPower",
+    "u_dc": "busDCVoltage", "vdc_bus": "busDCVoltage",
+    "mppt_1_u": "mppt1Voltage", "vpv1": "mppt1Voltage",
+    "mppt_1_i": "mppt1Current", "ipv1": "mppt1Current",
+    "mppt_2_u": "mppt2Voltage", "vpv2": "mppt2Voltage",
+    "mppt_2_i": "mppt2Current", "ipv2": "mppt2Current",
+    "mppt_3_u": "mppt3Voltage", "vpv3": "mppt3Voltage",
+    "mppt_3_i": "mppt3Current", "ipv3": "mppt3Current",
+    "mppt_4_u": "mppt4Voltage", "vpv4": "mppt4Voltage",
+    "mppt_4_i": "mppt4Current", "ipv4": "mppt4Current",
+    "e_day": "todayEnergy",   "e_today": "todayEnergy",
+    "e_total": "totalEnergy", "e_lifetime": "totalEnergy",
+    "temp_inside": "tempInternal", "temperature": "tempInternal",
+    "temp_heatsink": "tempHeatsink",
+    "efficiency": "efficiency",
+}
+
 SUNGROW_ERROR_CODES = {
     "002": {"desc": "Grid overvoltage",              "severity": "high",   "fix": "Check grid voltage. Adjust VAC upper limit if within tolerance."},
     "003": {"desc": "Grid undervoltage",             "severity": "high",   "fix": "Check grid connection. Verify transformer settings."},
@@ -622,6 +772,76 @@ def lookup_error(code):
             return {**val, "code": key}
     return {"code": code_str, "desc": f"Error code {code_str}", "severity": "medium",
             "fix": "Check iSolarCloud app for details or contact Sungrow service."}
+
+
+def _parse_device_points(rt_data, sn=None):
+    """Parse getDeviceRealTimeData response → ({fieldName: floatValue}, {rawCode: rawValue}).
+
+    Handles three Sungrow API formats:
+      1. device_point_list[].data_point_detail[] with data_point_code/value
+      2. Flat dict with p83xxx keys
+      3. Legacy named-field dict (p_ac, u_ab, etc.)
+    """
+    if not rt_data or not isinstance(rt_data, dict):
+        return {}, {}
+
+    # Find the device sub-dict
+    device_data = None
+    for list_key in ("device_point_list", "device_data_list", "devices", "list", "inverters"):
+        device_list = rt_data.get(list_key)
+        if not isinstance(device_list, list):
+            continue
+        for dev in device_list:
+            if not isinstance(dev, dict):
+                continue
+            if sn and dev.get("device_sn") != sn:
+                continue
+            device_data = dev
+            break
+        if device_data:
+            break
+
+    if device_data is None:
+        device_data = rt_data  # single-device or flat format
+
+    raw_codes = {}
+    parsed    = {}
+
+    # Format 1: list of {data_point_code, value} entries
+    for dp_key in ("data_point_detail", "data_list", "data_points", "point_list", "points"):
+        dp_list = device_data.get(dp_key)
+        if not isinstance(dp_list, list):
+            continue
+        for pt in dp_list:
+            if not isinstance(pt, dict):
+                continue
+            code = (pt.get("data_point_code") or pt.get("code") or pt.get("key") or "")
+            val  = pt.get("value") or pt.get("val") or ""
+            if code:
+                raw_codes[code] = val
+                if code in SUNGROW_INVERTER_POINTS:
+                    field, _ = SUNGROW_INVERTER_POINTS[code]
+                    parsed[field] = _safe_float(val)
+        if raw_codes:
+            break  # found data — stop searching
+
+    # Format 2: flat dict with p8xxxx keys
+    if not raw_codes:
+        for k, v in device_data.items():
+            if isinstance(k, str) and k.startswith("p8") and not isinstance(v, (dict, list)):
+                raw_codes[k] = v
+                if k in SUNGROW_INVERTER_POINTS:
+                    field, _ = SUNGROW_INVERTER_POINTS[k]
+                    parsed[field] = _safe_float(v)
+
+    # Format 3: legacy named fields (fallback for older API versions)
+    if not parsed:
+        for legacy_key, field_name in _LEGACY_FIELD_MAP.items():
+            val = device_data.get(legacy_key)
+            if val is not None and val not in ("", "--"):
+                parsed[field_name] = _safe_float(val)
+
+    return parsed, raw_codes
 
 # ---------------------------------------------------------------------------
 # Demo data
@@ -1128,7 +1348,8 @@ def fleet_analytics(current_user):
         if USE_DEMO or not SUNGROW_APPKEY:
             plants = generate_demo_data()
         else:
-            plants = client.get_all_plants_summary()
+            # Use cached plants (no extra Sungrow call)
+            plants = client._cached("all_plants_summary", client._fetch_all_plants_summary, ttl=300)
         plants = _filter_plants_for_user(plants, current_user)
 
         # Current totals
@@ -1236,7 +1457,7 @@ def all_notifications(current_user):
         if USE_DEMO or not SUNGROW_APPKEY:
             plants = generate_demo_data()
         else:
-            plants = client.get_all_plants_summary()
+            plants = client._cached("all_plants_summary", client._fetch_all_plants_summary, ttl=300)
         plants = _filter_plants_for_user(plants, current_user)
         all_errors = []
         for p in plants:
@@ -1278,7 +1499,7 @@ def compare_plants(current_user):
         if USE_DEMO or not SUNGROW_APPKEY:
             all_plants = generate_demo_data()
         else:
-            all_plants = client.get_all_plants_summary()
+            all_plants = client._cached("all_plants_summary", client._fetch_all_plants_summary, ttl=300)
         all_plants = _filter_plants_for_user(all_plants, current_user)
         selected = [p for p in all_plants if p["id"] in plant_ids]
         return jsonify({"plants": selected})
@@ -1292,7 +1513,7 @@ def compare_plants(current_user):
 @app.route("/api/plants/<plant_id>/inverters")
 @require_role()
 def plant_inverters(plant_id, current_user):
-    """Real-time inverter data for a plant."""
+    """Comprehensive real-time inverter data — 3-phase, MPPT, strings, thermal."""
     if current_user["role"] != "admin":
         allowed = set(json.loads(current_user["plant_ids"] or "[]"))
         if plant_id not in allowed:
@@ -1300,60 +1521,211 @@ def plant_inverters(plant_id, current_user):
     try:
         if USE_DEMO or not SUNGROW_APPKEY:
             import random
-            return jsonify({"inverters": [_make_demo_inverter(i, plant_id) for i in range(random.randint(1, 4))]})
+            n = random.randint(1, 4)
+            return jsonify({"inverters": [_make_demo_inverter(i, plant_id) for i in range(n)]})
+
         devices = client.get_device_list(plant_id)
         rt      = client.get_device_realtime(plant_id)
         result  = []
+
         for d in (devices if isinstance(devices, list) else []):
-            sn   = d.get("device_sn", "")
-            rt_d = {}
-            if isinstance(rt, dict):
-                for entry in rt.get("devices", rt.get("list", [])):
-                    if entry.get("device_sn") == sn:
-                        rt_d = entry
-                        break
-            result.append({
-                "sn":         sn,
-                "model":      d.get("device_model_code", d.get("device_model", "")),
-                "status":     _parse_device_status(d.get("dev_status", 1)),
-                "power":      _sg_val(rt_d.get("p_ac", rt_d.get("pac", 0))),
-                "voltage_ac": _sg_val(rt_d.get("u_ab", rt_d.get("vac", 0))),
-                "current_ac": _sg_val(rt_d.get("i_a", rt_d.get("iac", 0))),
-                "voltage_dc": _sg_val(rt_d.get("mppt_1_u", rt_d.get("vdc", 0))),
-                "current_dc": _sg_val(rt_d.get("mppt_1_i", rt_d.get("idc", 0))),
-                "temperature": _sg_val(rt_d.get("temp_inside", rt_d.get("temperature", 0))),
-                "efficiency":  _sg_val(rt_d.get("efficiency", 0)),
-                "todayEnergy": _sg_val(rt_d.get("e_day", 0)),
-                "totalEnergy": _sg_val(rt_d.get("e_total", 0)),
-                "frequency":   _sg_val(rt_d.get("f_ac", 0)),
-                "lastUpdate":  d.get("rel_time", ""),
-            })
-        return jsonify({"inverters": result})
+            sn            = d.get("device_sn", "")
+            dev_status    = _parse_device_status(d.get("dev_status", 1))
+            fault_status  = d.get("dev_fault_status")  # numeric fault code
+            parsed, raw_codes = _parse_device_points(rt, sn)
+
+            # Build MPPT array from parsed real-time fields (if available)
+            mppts = []
+            for i in range(1, 9):
+                v = parsed.get(f"mppt{i}Voltage")
+                c = parsed.get(f"mppt{i}Current")
+                if v is not None or c is not None:
+                    mppts.append({
+                        "idx":     i,
+                        "voltage": v,
+                        "current": c,
+                        "power":   round(v * c / 1000, 2) if (v and c) else None,
+                    })
+
+            # Build string array from parsed real-time fields (if available)
+            strings = []
+            for i in range(1, 25):
+                curr = parsed.get(f"str{i}Current")
+                volt = parsed.get(f"str{i}Voltage")
+                if curr is not None:
+                    mppt_idx = ((i - 1) // 2) + 1
+                    strings.append({
+                        "idx":     i,
+                        "mpptIdx": mppt_idx,
+                        "current": curr,
+                        "voltage": volt,
+                    })
+
+            # Derive fault meaning from dev_fault_status code
+            fault_meaning = None
+            if fault_status and int(str(fault_status)) not in (0, 3):
+                fault_meaning = f"Fault code {fault_status}"
+
+            inv = {
+                "sn":                sn,
+                "model":             d.get("device_model_code", d.get("device_model", "")),
+                "typeName":          "Inverter",
+                "status":            dev_status,
+                "faultStatus":       fault_status,
+                "faultMeaning":      fault_meaning,
+                "lastUpdate":        d.get("rel_time", ""),
+                "commissioningDate": d.get("grid_connection_date", d.get("install_date", "")),
+                "datalogSn":         d.get("communication_dev_sn", ""),
+                "channelId":         d.get("chnnl_id"),
+                "runningStatus":     parsed.get("runningStatus") or ("Running" if dev_status == "online" else dev_status.capitalize()),
+                # AC Output (from real-time API — null if API Level 1 only)
+                "activePower":   parsed.get("activePower"),
+                "reactivePower": parsed.get("reactivePower"),
+                "apparentPower": parsed.get("apparentPower"),
+                "powerFactor":   parsed.get("powerFactor"),
+                "frequency":     parsed.get("frequency"),
+                "voltageA":      parsed.get("voltageA"),
+                "voltageB":      parsed.get("voltageB"),
+                "voltageC":      parsed.get("voltageC"),
+                "voltageAB":     parsed.get("voltageAB"),
+                "voltageBC":     parsed.get("voltageBC"),
+                "voltageCA":     parsed.get("voltageCA"),
+                "currentA":      parsed.get("currentA"),
+                "currentB":      parsed.get("currentB"),
+                "currentC":      parsed.get("currentC"),
+                # DC Bus
+                "totalDCPower":  parsed.get("totalDCPower"),
+                "busDCVoltage":  parsed.get("busDCVoltage"),
+                # MPPT & Strings
+                "mppt":          mppts,
+                "strings":       strings,
+                # Energy
+                "todayEnergy":   parsed.get("todayEnergy"),
+                "totalEnergy":   parsed.get("totalEnergy"),
+                # Thermal
+                "tempInternal":  parsed.get("tempInternal"),
+                "tempHeatsink":  parsed.get("tempHeatsink"),
+                "tempModule":    parsed.get("tempModule"),
+                "tempAmbient":   parsed.get("tempAmbient"),
+                "irradiance":    parsed.get("irradiance"),
+                "efficiency":    parsed.get("efficiency"),
+                # Legacy compat
+                "power":         parsed.get("activePower"),
+                "voltage_ac":    parsed.get("voltageAB") or parsed.get("voltageA"),
+                "current_ac":    parsed.get("currentA"),
+                "voltage_dc":    parsed.get("mppt1Voltage"),
+                "current_dc":    parsed.get("mppt1Current"),
+                "temperature":   parsed.get("tempInternal"),
+                "rawCount":      len(raw_codes),
+                # API capability level: 1 = device list only, 2 = real-time params
+                "apiLevel":      2 if raw_codes else 1,
+            }
+            result.append(inv)
+
+        return jsonify({
+            "inverters": result,
+            "apiLevel":  2 if any(i["rawCount"] > 0 for i in result) else 1,
+            "note":      None if any(i["rawCount"] > 0 for i in result) else
+                         "Real-time inverter parameters (voltages, currents, MPPT) require API Level 2 access in iSolarCloud Developer Portal.",
+        })
     except Exception as e:
         log.error("Inverter data failed for %s: %s", plant_id, e)
         return jsonify({"error": str(e)}), 500
 
+
 def _make_demo_inverter(idx, plant_id):
-    import random
-    models = ["SG33CX", "SG50CX", "SG125HV", "SG10RT-V112"]
-    statuses = ["online", "online", "online", "warning"]
-    st = random.choice(statuses)
-    pwr = round(20 + random.random() * 60, 1) if st == "online" else 0
+    import random, math
+    models       = ["SG33CX", "SG50CX", "SG125HV", "SG10RT-V112", "SG60CX-P", "SG250HX"]
+    n_mppt_map   = {"SG33CX": 4, "SG50CX": 4, "SG125HV": 6, "SG10RT-V112": 2, "SG60CX-P": 5, "SG250HX": 12}
+    n_str_map    = {"SG33CX": 8, "SG50CX": 10, "SG125HV": 12, "SG10RT-V112": 4, "SG60CX-P": 10, "SG250HX": 24}
+
+    model    = models[idx % len(models)]
+    n_mppt   = n_mppt_map[model]
+    n_str    = n_str_map[model]
+    statuses = ["online", "online", "online", "online", "warning"]
+    st       = random.choice(statuses)
+
+    base_pwr   = round(20 + random.random() * 80, 1) if st == "online" else (round(random.random() * 5, 1) if st == "warning" else 0)
+    base_v_dc  = round(620 + random.random() * 80, 1)
+    base_v_ac  = round(228 + random.random() * 8, 1)
+    pf         = round(0.97 + random.random() * 0.028, 3)
+    freq       = round(49.95 + random.random() * 0.10, 2)
+    phase_a    = round(base_pwr / 3 / base_v_ac * 1000, 1) if base_pwr else 0
+
+    # MPPT array
+    mppts = []
+    for i in range(1, n_mppt + 1):
+        v = round(base_v_dc * (0.97 + random.random() * 0.06), 1) if base_pwr else 0
+        c = round(base_pwr / n_mppt / (v / 1000), 1) if (base_pwr and v) else 0
+        if i == n_mppt and random.random() < 0.12:  # occasional underperforming MPPT
+            v = round(v * 0.91, 1)
+            c = round(c * 0.87, 1)
+        mppts.append({"idx": i, "voltage": v, "current": c,
+                      "power": round(v * c / 1000, 2) if (v and c) else 0})
+
+    # String array (2 strings per MPPT)
+    n_spm = max(1, n_str // n_mppt)
+    strings = []
+    for i in range(1, n_str + 1):
+        mi    = min(((i - 1) // n_spm), len(mppts) - 1)
+        base_v = mppts[mi]["voltage"] if mppts else base_v_dc
+        base_c = mppts[mi]["current"] if mppts else 10
+        sc = round(base_c / n_spm * (0.92 + random.random() * 0.16), 1)
+        if i % 7 == 0 and random.random() < 0.20:  # partial shade / fault on occasional string
+            sc = round(sc * 0.55, 1)
+        strings.append({
+            "idx": i, "mpptIdx": mi + 1,
+            "current": sc if base_pwr else 0,
+            "voltage": round(base_v * (0.99 + random.random() * 0.02), 1) if base_pwr else 0,
+        })
+
+    today = round(base_pwr * 5.8, 1)
+    total = round(today * 365 * (2 + random.random() * 3), 1)
+
     return {
-        "sn":          f"B{2000+idx}{random.randint(100000,999999)}",
-        "model":       models[idx % len(models)],
-        "status":      st,
-        "power":       pwr,
-        "voltage_ac":  round(220 + random.random() * 20, 1),
-        "current_ac":  round(pwr / 230 * 1000, 1) if pwr else 0,
-        "voltage_dc":  round(600 + random.random() * 100, 1),
-        "current_dc":  round(pwr / 700 * 1000, 1) if pwr else 0,
-        "temperature": round(35 + random.random() * 20, 1),
-        "efficiency":  round(97.5 + random.random() * 1.5, 1),
-        "todayEnergy": round(pwr * 5.5, 1),
-        "totalEnergy": round(pwr * 5.5 * 365 * 3, 1),
-        "frequency":   round(49.8 + random.random() * 0.4, 2),
-        "lastUpdate":  datetime.now().isoformat(),
+        "sn":            f"B{2000+idx}{random.randint(100000,999999)}",
+        "model":         model,
+        "status":        st,
+        "lastUpdate":    datetime.now().isoformat(),
+        "runningStatus": "Running" if st == "online" else ("Warning" if st == "warning" else "Standby"),
+        # AC
+        "activePower":   base_pwr,
+        "reactivePower": round(base_pwr * (1 - pf) * 0.3, 1),
+        "apparentPower": round(base_pwr / pf, 1) if pf else base_pwr,
+        "powerFactor":   pf,
+        "frequency":     freq,
+        "voltageA":      round(base_v_ac * (0.99 + random.random() * 0.02), 1),
+        "voltageB":      round(base_v_ac * (0.99 + random.random() * 0.02), 1),
+        "voltageC":      round(base_v_ac * (0.99 + random.random() * 0.02), 1),
+        "voltageAB":     round(base_v_ac * 1.732 * (0.995 + random.random() * 0.01), 1),
+        "voltageBC":     round(base_v_ac * 1.732 * (0.995 + random.random() * 0.01), 1),
+        "voltageCA":     round(base_v_ac * 1.732 * (0.995 + random.random() * 0.01), 1),
+        "currentA":      phase_a,
+        "currentB":      round(phase_a * (0.99 + random.random() * 0.02), 1),
+        "currentC":      round(phase_a * (0.99 + random.random() * 0.02), 1),
+        # DC
+        "totalDCPower":  round(base_pwr / pf * 1.02, 1),
+        "busDCVoltage":  round(base_v_dc * 1.08, 1),
+        "mppt":          mppts,
+        "strings":       strings,
+        # Energy
+        "todayEnergy":   today,
+        "totalEnergy":   total,
+        # Thermal
+        "tempInternal":  round(38 + random.random() * 18, 1) if st != "offline" else round(26 + random.random() * 5, 1),
+        "tempHeatsink":  round(45 + random.random() * 20, 1) if st != "offline" else round(30 + random.random() * 5, 1),
+        "tempModule":    None,
+        "tempAmbient":   None,
+        "irradiance":    round(650 + random.random() * 350, 0) if st != "offline" else 0,
+        "efficiency":    round(97.5 + random.random() * 1.5, 1) if st != "offline" else 0,
+        # Legacy compat
+        "power":         base_pwr,
+        "voltage_ac":    round(base_v_ac * 1.732, 1),
+        "current_ac":    phase_a,
+        "voltage_dc":    mppts[0]["voltage"] if mppts else 0,
+        "current_dc":    mppts[0]["current"] if mppts else 0,
+        "temperature":   round(38 + random.random() * 18, 1) if st != "offline" else 25,
+        "rawCount":      len(SUNGROW_INVERTER_POINTS),
     }
 
 # ---------------------------------------------------------------------------
@@ -1464,6 +1836,217 @@ def period_compare(plant_id, current_user):
         })
     except Exception as e:
         log.error("Period compare failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Intraday active power curve (kW at 15-min intervals)
+# ---------------------------------------------------------------------------
+@app.route("/api/plants/<plant_id>/power-curve")
+@require_role()
+def plant_power_curve(plant_id, current_user):
+    """Today's (or any date's) intraday active power curve at 15-min resolution."""
+    if current_user["role"] != "admin":
+        allowed = set(json.loads(current_user["plant_ids"] or "[]"))
+        if plant_id not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+    date_str = request.args.get("date", datetime.now().strftime("%Y%m%d"))
+    date_fmt = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+
+    try:
+        if USE_DEMO or not SUNGROW_APPKEY:
+            return jsonify({"data": _demo_power_curve(date_fmt), "unit": "kW", "date": date_fmt})
+
+        try:
+            raw = client.get_chart_data(plant_id, date_str, "1", "p83001")
+            if not raw or not isinstance(raw, dict) or not raw.get("data_points"):
+                raw = client.get_chart_data(plant_id, date_str, "1", "p83022")
+            data = _parse_chart_points(raw, date_fmt, interval_min=15)
+        except Exception:
+            data = []
+
+        if not data:
+            return jsonify({
+                "data": [], "unit": "kW", "date": date_fmt,
+                "unavailable": True,
+                "reason": "Chart data (getPowerChartData) requires API Level 2 permissions in iSolarCloud.",
+            })
+        return jsonify({"data": data, "unit": "kW", "date": date_fmt})
+    except Exception as e:
+        log.error("Power curve failed for %s: %s", plant_id, e)
+        return jsonify({"error": str(e), "data": []}), 500
+
+
+def _demo_power_curve(date_fmt):
+    import random, math
+    data = []
+    for h in range(6, 19):
+        for m in (0, 15, 30, 45):
+            frac   = (h - 6 + m / 60) / 12.5
+            cloud  = random.random()
+            cfac   = 1.0 if cloud > 0.18 else (0.35 + cloud * 3.6)
+            val    = round(max(0, 180 * math.sin(math.pi * frac) * cfac + random.uniform(-4, 4)), 1)
+            data.append({"ts": f"{date_fmt}T{h:02d}:{m:02d}:00", "value": val})
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Per-plant delta KPIs (yesterday, last month)
+# ---------------------------------------------------------------------------
+@app.route("/api/plants/<plant_id>/kpis")
+@require_role()
+def plant_kpis(plant_id, current_user):
+    """Returns today vs yesterday, this month vs last month energy deltas."""
+    if current_user["role"] != "admin":
+        allowed = set(json.loads(current_user["plant_ids"] or "[]"))
+        if plant_id not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+    now = datetime.now()
+
+    try:
+        if USE_DEMO or not SUNGROW_APPKEY:
+            import random
+            today_e      = round(300 + random.random() * 250, 1)
+            yest_e       = round(today_e * (0.82 + random.random() * 0.36), 1)
+            last_m_days  = (now.replace(day=1) - timedelta(days=1)).day
+            this_month_e = round(today_e * now.day * (0.92 + random.random() * 0.16), 1)
+            last_month_e = round(today_e * last_m_days * (0.88 + random.random() * 0.24), 1)
+            return jsonify({
+                "today":     today_e,
+                "yesterday": yest_e,
+                "thisMonth": this_month_e,
+                "lastMonth": last_month_e,
+                "todayDelta":     round((today_e - yest_e) / yest_e * 100, 1) if yest_e else None,
+                "monthDelta":     round((this_month_e - last_month_e) / last_month_e * 100, 1) if last_month_e else None,
+            })
+
+        # Get today from plant summary cache (always available)
+        plants  = client._cached("all_plants_summary", client._fetch_all_plants_summary, ttl=300)
+        plant   = next((p for p in plants if str(p.get("id")) == str(plant_id)), {})
+        today_e = plant.get("todayEnergy", 0) or 0
+
+        # Try chart data for yesterday/month comparisons (needs API Level 2)
+        yest_e = None; this_m_e = None; last_m_e = None
+        chart_available = False
+        try:
+            yest = now - timedelta(days=1)
+            with ThreadPoolExecutor(max_workers=3) as ex:
+                f_yest = ex.submit(client.get_chart_data, plant_id, yest.strftime("%Y%m%d"), "1", "p83022")
+                f_this = ex.submit(client.get_chart_data, plant_id, now.strftime("%Y%m"),    "2", "p83022")
+                f_last = ex.submit(client.get_chart_data, plant_id,
+                                   (now.replace(day=1) - timedelta(days=1)).strftime("%Y%m"), "2", "p83022")
+                raw_yest, raw_this, raw_last = f_yest.result(), f_this.result(), f_last.result()
+
+            yest_pts   = _parse_chart_points(raw_yest, yest.strftime("%Y-%m-%d"), 15)
+            this_m_pts = _parse_chart_points_monthly(raw_this, now.year, now.month)
+            last_m_dt  = now.replace(day=1) - timedelta(days=1)
+            last_m_pts = _parse_chart_points_monthly(raw_last, last_m_dt.year, last_m_dt.month)
+
+            if yest_pts or this_m_pts:
+                chart_available = True
+                yest_e   = round(sum(p["value"] for p in yest_pts), 1)
+                this_m_e = round(sum(p["value"] for p in this_m_pts), 1)
+                last_m_e = round(sum(p["value"] for p in last_m_pts), 1)
+        except Exception:
+            pass  # chart data unavailable (API Level 1)
+
+        # Fetch per-plant tariff from getPowerStationDetail (cached 10 min)
+        plant_tariff = None
+        try:
+            detail = client.get_plant_detail(plant_id)
+            raw_price = (detail.get("ps_price_kwh") or detail.get("price_kwh") or
+                         detail.get("electricity_price"))
+            if raw_price:
+                plant_tariff = _safe_float(raw_price) or None
+        except Exception:
+            pass
+
+        return jsonify({
+            "today":        today_e,
+            "yesterday":    yest_e,
+            "thisMonth":    this_m_e or plant.get("monthEnergy"),
+            "lastMonth":    last_m_e,
+            "todayDelta":   round((today_e - yest_e) / yest_e * 100, 1) if yest_e else None,
+            "monthDelta":   None,
+            "chartAvailable": chart_available,
+            # Extra live fields from plant summary
+            "equivalentHours":   plant.get("equivalentHours"),
+            "todayIncomeActual": plant.get("todayIncomeActual"),
+            "yearIncomeActual":  plant.get("yearIncomeActual"),
+            "totalIncomeActual": plant.get("totalIncomeActual"),
+            "co2Today":          plant.get("co2Today"),
+            "alarmCount":        plant.get("alarmCount", 0),
+            "faultCount":        plant.get("faultCount", 0),
+            "lastUpdated":       plant.get("lastUpdated"),
+            # Per-plant configured tariff (from getPowerStationDetail)
+            "tariffPerKwh":      plant_tariff or plant.get("tariffPerKwh"),
+        })
+    except Exception as e:
+        log.error("KPIs failed for %s: %s", plant_id, e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Per-plant monthly / yearly energy charts
+# ---------------------------------------------------------------------------
+@app.route("/api/plants/<plant_id>/monthly-chart")
+@require_role()
+def plant_monthly_chart(plant_id, current_user):
+    """Monthly energy breakdown: daily bars for current month + past 11 months summary."""
+    if current_user["role"] != "admin":
+        allowed = set(json.loads(current_user["plant_ids"] or "[]"))
+        if plant_id not in allowed:
+            return jsonify({"error": "Access denied"}), 403
+
+    now = datetime.now()
+    try:
+        if USE_DEMO or not SUNGROW_APPKEY:
+            import random
+            monthly = []
+            for i in range(12):
+                d = now.replace(day=1) - timedelta(days=30 * (11 - i))
+                monthly.append({
+                    "month": d.strftime("%b %Y"),
+                    "energy": round(8000 + random.random() * 6000, 0),
+                })
+            daily = []
+            for day in range(1, now.day + 1):
+                daily.append({
+                    "date": f"{now.year}-{now.month:02d}-{day:02d}",
+                    "energy": round(200 + random.random() * 300, 1),
+                })
+            return jsonify({"monthly": monthly, "daily": daily})
+
+        # Fetch current month daily + 12-month summary in parallel
+        def fetch_month(year, month):
+            raw = client.get_chart_data(plant_id, f"{year}{month:02d}", "2", "p83022")
+            return _parse_chart_points_monthly(raw, year, month)
+
+        def fetch_year(year):
+            raw = client.get_chart_data(plant_id, str(year), "3", "p83022")
+            return _parse_chart_points_yearly(raw, year)
+
+        monthly_pts  = []
+        futures = {}
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for i in range(12):
+                d = (now.replace(day=1) - timedelta(days=30 * (11 - i)))
+                futures[(d.year, d.month)] = ex.submit(fetch_month, d.year, d.month)
+            daily_future = ex.submit(fetch_month, now.year, now.month)
+
+        for i in range(12):
+            d = (now.replace(day=1) - timedelta(days=30 * (11 - i)))
+            pts = futures[(d.year, d.month)].result()
+            total = round(sum(p["value"] for p in pts), 1)
+            monthly_pts.append({"month": d.strftime("%b %Y"), "energy": total})
+
+        daily = [{"date": p["ts"], "energy": p["value"]} for p in daily_future.result()]
+
+        return jsonify({"monthly": monthly_pts, "daily": daily})
+    except Exception as e:
+        log.error("Monthly chart failed for %s: %s", plant_id, e)
         return jsonify({"error": str(e)}), 500
 
 

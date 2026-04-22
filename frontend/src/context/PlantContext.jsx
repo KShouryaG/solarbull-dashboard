@@ -11,14 +11,17 @@ export function PlantProvider({ children }) {
   const [error,   setError]   = useState(null);
   const lastFetch = useRef(0);
   const inflight  = useRef(null);
+  const plantsRef = useRef([]); // ref copy — no stale closure
 
+  // Empty deps: fetchPlants is stable (no recreation on every plant update).
+  // Cache/inflight checks use refs so they always see current values.
   const fetchPlants = useCallback(async (force = false) => {
     const now = Date.now();
-    // Return cached data if fresh enough
-    if (!force && plants.length > 0 && now - lastFetch.current < CACHE_MS) {
-      return plants;
+    // Return cached data if still fresh
+    if (!force && lastFetch.current > 0 && now - lastFetch.current < CACHE_MS) {
+      return plantsRef.current;
     }
-    // Deduplicate concurrent calls — return the same promise if one is in flight
+    // Deduplicate concurrent calls
     if (inflight.current) return inflight.current;
 
     setLoading(true);
@@ -27,6 +30,7 @@ export function PlantProvider({ children }) {
     const promise = getPlants()
       .then((d) => {
         const p = d.plants || [];
+        plantsRef.current = p;
         setPlants(p);
         lastFetch.current = Date.now();
         return p;
@@ -34,7 +38,7 @@ export function PlantProvider({ children }) {
       .catch((e) => {
         console.error("PlantContext fetch error:", e);
         setError(e.message || "Failed to load plants");
-        return plants; // return stale on error
+        return plantsRef.current; // stale on error
       })
       .finally(() => {
         setLoading(false);
@@ -43,7 +47,7 @@ export function PlantProvider({ children }) {
 
     inflight.current = promise;
     return promise;
-  }, [plants]);
+  }, []); // stable — no deps needed
 
   const refresh = useCallback(() => fetchPlants(true), [fetchPlants]);
 
