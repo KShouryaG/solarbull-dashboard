@@ -1,14 +1,11 @@
-import sys
 import os
 
-# Add project root so server.py (bundled via includeFiles) is importable.
-_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _root not in sys.path:
-    sys.path.insert(0, _root)
-
 # Vercel's filesystem is read-only except /tmp.
+# init_db() re-seeds admin user from env vars on every cold start.
 os.environ.setdefault("DB_PATH", "/tmp/solarbull.db")
 
+# server.py is copied into api/ by the build command (cp server.py api/)
+# so it lives in the same directory as this file — no sys.path tricks needed.
 from server import app, init_db  # noqa: E402  — 'app' must be top-level for Vercel
 
 init_db()
