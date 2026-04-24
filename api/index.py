@@ -1,11 +1,16 @@
+import sys
 import os
 
-# Vercel's filesystem is read-only except /tmp.
-# init_db() re-seeds admin user from env vars on every cold start.
+# includeFiles in vercel.json bundles server.py alongside this file.
+# In the Lambda, __file__ is /var/task/api/index.py, so two dirname()
+# calls reach /var/task (the project root) where server.py lives.
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+# /tmp is the only writable path in Vercel's Lambda filesystem.
 os.environ.setdefault("DB_PATH", "/tmp/solarbull.db")
 
-# server.py is copied into api/ by the build command (cp server.py api/)
-# so it lives in the same directory as this file — no sys.path tricks needed.
-from server import app, init_db  # noqa: E402  — 'app' must be top-level for Vercel
+from server import app, init_db  # 'app' must be at top level for Vercel's scanner
 
 init_db()
