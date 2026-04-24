@@ -1716,7 +1716,7 @@ def plant_inverters(plant_id, current_user):
             "inverters": result,
             "apiLevel":  2 if any(i["rawCount"] > 0 for i in result) else 1,
             "note":      None if any(i["rawCount"] > 0 for i in result) else
-                         "Real-time inverter parameters (voltages, currents, MPPT) require API Level 2 access in iSolarCloud Developer Portal.",
+                         "getDeviceRealTimeData returned no data points for this account — basic device list shown.",
         })
     except Exception as e:
         log.error("Inverter data failed for %s: %s", plant_id, e)

@@ -342,8 +342,7 @@ function InvertersTab({ inverters, loading, onSelect, apiLevel }) {
         <div style={{ padding: "12px 16px", background: "#FFF8EE", border: "1px solid #F7941D40", borderRadius: 8, fontSize: 12, color: "#92400E", display: "flex", gap: 8, alignItems: "flex-start" }}>
           <span style={{ fontSize: 16 }}>ℹ</span>
           <div>
-            <strong>Device list data shown.</strong> Real-time inverter parameters (AC voltages, MPPT currents, 3-phase data, string health) require <strong>API Level 2</strong> permissions in the iSolarCloud Developer Portal.
-            Contact Sungrow support to upgrade your appkey permissions.
+            <strong>Basic device info shown.</strong> Per-inverter real-time parameters (AC voltages, MPPT currents, 3-phase data) are not returned by the iSolarCloud API for this account type — this is a known limitation of the developer API, not a configuration issue.
           </div>
         </div>
       )}
@@ -488,7 +487,7 @@ function InverterCard({ inv, idx, onSelect }) {
                 {inv.commissioningDate && <span>Commissioned: {formatDate(inv.commissioningDate)}</span>}
                 {inv.datalogSn && <span>Datalogger: {inv.datalogSn}</span>}
                 {inv.faultMeaning && <span style={{ color: "#DC2626", fontWeight: 600 }}>⚠ {inv.faultMeaning}</span>}
-                {inv.apiLevel === 1 && <span style={{ color: "#F7941D" }}>API Level 1 — no real-time params</span>}
+                {inv.apiLevel === 1 && <span style={{ color: "#F7941D" }}>Basic data only</span>}
               </div>
             </div>
           </div>
