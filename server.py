@@ -210,6 +210,98 @@ def require_role(role=None):
     return decorator
 
 # ---------------------------------------------------------------------------
+# iSolarCloud Portal API — encrypted transport
+# ---------------------------------------------------------------------------
+# The web portal (web3.isolarcloud.com.hk) uses a hybrid RSA+AES scheme:
+#   1. Generate a random 32-char AES key  ("web" + 29 random alnum chars)
+#   2. RSA-PKCS1v15 encrypt the AES key  → X-Random-Secret-Key (Base64)
+#   3. RSA-PKCS1v15 encrypt the user_id  → X-Limit-Obj (Base64)
+#   4. AES-256-ECB encrypt the JSON body → hex-encoded request body
+#   5. Decrypt response hex with the same AES key
+# Public key source: Sungrow web portal JS bundle (static, unchanged since 2022)
+_PORTAL_RSA_URL_B64 = (
+    "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCkecphb6vgsBx4LJknKKes-eyj"
+    "7-RKQ3fikF5B67EObZ3t4moFZyMGuuJPiadYdaxvRqtxyblIlVM7omAasROtKRht"
+    "gKwwRxo2a6878qBhTgUVlsqugpI_7ZC9RmO2Rpmr8WzDeAapGANfHN5bVr7G7GY"
+    "GwIrjvyxMrAVit_oM4wIDAQAB"
+)
+_PORTAL_APPKEY      = "B0455FBE7AA0328DB57B59AA729F05D8"
+_PORTAL_ACCESS_KEY  = "9grzgbmxdsp3arfmmgq347xjbza4ysps"
+
+import random as _random
+import base64 as _b64
+import binascii as _binascii
+
+try:
+    from Crypto.PublicKey import RSA as _RSA
+    from Crypto.Cipher import PKCS1_v1_5 as _PKCS1v15, AES as _AES
+    from Crypto.Util.Padding import pad as _aes_pad, unpad as _aes_unpad
+    _PORTAL_DER = _b64.b64decode(
+        _PORTAL_RSA_URL_B64.replace('-', '+').replace('_', '/')
+    )
+    _PORTAL_RSA_KEY = _RSA.import_key(_PORTAL_DER)
+    _PORTAL_CRYPTO_OK = True
+except ImportError:
+    _PORTAL_CRYPTO_OK = False
+    log.warning("pycryptodome not installed — portal encrypted API disabled")
+
+def _portal_rsa_encrypt(plaintext: str) -> str:
+    cipher = _PKCS1v15.new(_PORTAL_RSA_KEY)
+    return _b64.b64encode(cipher.encrypt(plaintext.encode())).decode()
+
+def _portal_aes_key(key: str) -> bytes:
+    kb = key.encode()
+    n = len(kb)
+    if n < 16:   return kb.ljust(16, b'\0')
+    if n <= 16:  return kb
+    if n < 24:   return kb.ljust(24, b'\0')
+    if n <= 24:  return kb
+    if n < 32:   return kb.ljust(32, b'\0')
+    return kb[:32]
+
+def _portal_aes_encrypt(plaintext: str, key: str) -> str:
+    kb = _portal_aes_key(key)
+    c = _AES.new(kb, _AES.MODE_ECB)
+    return c.encrypt(_aes_pad(plaintext.encode(), _AES.block_size)).hex()
+
+def _portal_aes_decrypt(hex_ct: str, key: str) -> str:
+    kb = _portal_aes_key(key)
+    ct = bytes.fromhex(hex_ct.strip())
+    c = _AES.new(kb, _AES.MODE_ECB)
+    return _aes_unpad(c.decrypt(ct), _AES.block_size).decode()
+
+_ALNUM = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+def _portal_request(session, server: str, endpoint: str, data: dict,
+                    portal_token: str) -> dict:
+    """One encrypted portal API call. Returns parsed JSON dict."""
+    if not _PORTAL_CRYPTO_OK:
+        raise RuntimeError("pycryptodome not available")
+    user_id = portal_token.split('_')[0]
+    rk  = 'web' + ''.join(_random.choice(_ALNUM) for _ in range(29))
+    nonce = ''.join(_random.choice(_ALNUM) for _ in range(32))
+    headers = {
+        'X-Random-Secret-Key': _portal_rsa_encrypt(rk),
+        'X-Limit-Obj':         _portal_rsa_encrypt(user_id),
+        'X-Access-Key':        _PORTAL_ACCESS_KEY,
+        'X-Client-Tz':         'GMT%2B5.5',
+        'Content-Type':        'text/plain;charset=UTF-8',
+        'Sys_code':            '200',
+    }
+    body = dict(data)
+    body['api_key_param'] = {'timestamp': int(time.time() * 1000), 'nonce': nonce}
+    body['sys_code'] = 200
+    body['token']    = portal_token
+    body['appkey']   = _PORTAL_APPKEY
+    enc = _portal_aes_encrypt(
+        json.dumps(body, ensure_ascii=False, separators=(',', ':')), rk
+    )
+    resp = session.post(f"{server}{endpoint}", data=enc, headers=headers, timeout=30)
+    resp.raise_for_status()
+    return json.loads(_portal_aes_decrypt(resp.text, rk))
+
+
+# ---------------------------------------------------------------------------
 # Sungrow iSolarCloud client
 # ---------------------------------------------------------------------------
 class SungrowClient:
@@ -378,7 +470,7 @@ class SungrowClient:
         return self._cached(cache_key, fetch, ttl=ttl)
 
     def get_device_realtime(self, ps_id, device_sn=None):
-        """Get real-time device data (inverter parameters)."""
+        """Get real-time device data via developer API (may return empty for some accounts)."""
         self.ensure_login()
         cache_key = f"device_rt:{ps_id}:{device_sn or 'all'}"
         def fetch():
@@ -388,6 +480,44 @@ class SungrowClient:
             result = self._post("/openapi/getDeviceRealTimeData", payload)
             data = result.get("result_data") if isinstance(result, dict) else None
             return data if isinstance(data, dict) else {}
+        return self._cached(cache_key, fetch, ttl=120)
+
+    def get_portal_device_realtime(self, ps_id: str, devices: list) -> dict:
+        """Get rich real-time inverter data via the portal's encrypted API.
+
+        Falls back silently to {} if crypto libs unavailable or request fails.
+        portal_token = '{user_id}_{developer_token}' — same backend session.
+        """
+        if not _PORTAL_CRYPTO_OK:
+            return {}
+        if not self.token or not self.user_id:
+            return {}
+        cache_key = f"portal_rt:{ps_id}"
+        def fetch():
+            portal_token = f"{self.user_id}_{self.token}"
+            # Build ps_key_list from the device list we already have.
+            # Format: {ps_id}_{device_type}_{chnnl_id}_{seq}
+            ps_keys = []
+            for d in (devices or []):
+                dtype  = d.get("device_type", 14)
+                chnnl  = d.get("chnnl_id") or 1
+                ps_keys.append(f"{ps_id}_{dtype}_{chnnl}_1")
+            # Fallback key if device list was empty
+            if not ps_keys:
+                ps_keys = [f"{ps_id}_14_1_1"]
+            ps_key_str = ",".join(ps_keys)
+            try:
+                result = _portal_request(
+                    self.session, self.server,
+                    "/v1/devService/queryDeviceRealTimeDataByPsKeys",
+                    {"ps_key_list": ps_key_str, "ps_ke_list": ps_key_str},
+                    portal_token,
+                )
+                log.info("Portal API call succeeded for ps_id=%s", ps_id)
+                return result.get("result_data") or result
+            except Exception as e:
+                log.warning("Portal API failed for ps_id=%s: %s", ps_id, e)
+                return {}
         return self._cached(cache_key, fetch, ttl=120)
 
     def get_plant_energy_overview(self, ps_id):
@@ -1615,8 +1745,11 @@ def plant_inverters(plant_id, current_user):
             return jsonify({"inverters": [_make_demo_inverter(i, plant_id) for i in range(n)]})
 
         devices = client.get_device_list(plant_id)
-        rt      = client.get_device_realtime(plant_id)
-        result  = []
+        # Try portal (encrypted) API first — returns rich per-inverter params.
+        # Fall back to developer API if portal call fails or returns nothing.
+        portal_rt = client.get_portal_device_realtime(plant_id, devices)
+        rt = portal_rt if portal_rt else client.get_device_realtime(plant_id)
+        result    = []
 
         for d in (devices if isinstance(devices, list) else []):
             sn            = d.get("device_sn", "")
@@ -1712,11 +1845,14 @@ def plant_inverters(plant_id, current_user):
             }
             result.append(inv)
 
+        has_data  = any(i["rawCount"] > 0 for i in result)
+        via_portal = bool(portal_rt) and has_data
         return jsonify({
-            "inverters": result,
-            "apiLevel":  2 if any(i["rawCount"] > 0 for i in result) else 1,
-            "note":      None if any(i["rawCount"] > 0 for i in result) else
-                         "getDeviceRealTimeData returned no data points for this account — basic device list shown.",
+            "inverters":   result,
+            "apiLevel":    2 if has_data else 1,
+            "dataSource":  "portal" if via_portal else ("developer" if has_data else "device_list"),
+            "note":        None if has_data else
+                           "Real-time inverter parameters unavailable — basic device list shown.",
         })
     except Exception as e:
         log.error("Inverter data failed for %s: %s", plant_id, e)
