@@ -2,11 +2,13 @@ import { useState, useEffect, useMemo } from "react";
 import { usePlants } from "../context/PlantContext.jsx";
 import { GradeBadge, StatusBadge } from "../components/Badge.jsx";
 import { fmt, fmtDec, fmtPct, rupee } from "../utils/format.js";
-import { GRADE_COLORS } from "../utils/computed.js";
+import { GRADE_COLORS, BENCHMARKS } from "../utils/computed.js";
+import { getCompareHistory } from "../api.js";
 import {
   RadarChart, Radar, PolarGrid, PolarAngleAxis,
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend, Cell,
+  BarChart, Bar, LineChart, Line,
+  XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend, Cell, ReferenceLine,
 } from "recharts";
 
 const CHART_PALETTE = ["#F7941D", "#1E5BA6", "#0E9B65", "#8B5CF6", "#DC2626", "#0891B2"];
@@ -28,6 +30,26 @@ export default function Compare() {
   const [geoCity,     setGeoCity]     = useState("");
   const [geoRadius,   setGeoRadius]   = useState("50");
   const [geoRef,      setGeoRef]      = useState("");  // reference plant id for radius
+
+  // Historical period comparison
+  const today     = new Date();
+  const iso       = (d) => d.toISOString().slice(0, 10).replace(/-/g, "");
+  const [hStart,  setHStart]  = useState(iso(new Date(today.getFullYear(), today.getMonth() - 1, 1)));
+  const [hEnd,    setHEnd]    = useState(iso(new Date(today.getFullYear(), today.getMonth(), 0)));
+  const [hGran,   setHGran]   = useState("monthly");
+  const [hData,   setHData]   = useState(null);
+  const [hLoading,setHLoading]= useState(false);
+  const [hError,  setHError]  = useState("");
+
+  const runHistory = async () => {
+    if (selected.length < 1) return;
+    setHLoading(true); setHError(""); setHData(null);
+    try {
+      const res = await getCompareHistory(selected, hStart, hEnd, hGran);
+      setHData(res);
+    } catch (e) { setHError(e.message || "Failed to load historical data"); }
+    setHLoading(false);
+  };
 
   useEffect(() => { fetchPlants(); }, []);
 
@@ -74,14 +96,29 @@ export default function Compare() {
     return row;
   });
 
-  // Bar chart: energy comparison
+  // Bar chart: energy + specific yield comparison
   const energyData = [
-    { metric: "Today (kWh)",    key: "todayEnergy"   },
-    { metric: "Total (MWh)",    key: "totalEnergy",    divisor: 1000 },
+    { metric: "Today (kWh)",         key: "todayEnergy"          },
+    { metric: "This Month (kWh)",     key: "monthEnergy"          },
+    { metric: "Total (MWh)",          key: "totalEnergy", divisor: 1000 },
   ].map((def) => {
     const row = { metric: def.metric };
     plants.forEach((p) => {
-      row[p.id] = def.divisor ? parseFloat(((p[def.key] || 0) / def.divisor).toFixed(1)) : (p[def.key] || 0);
+      const val = p[def.key] || 0;
+      row[p.id] = def.divisor ? parseFloat((val / def.divisor).toFixed(1)) : val;
+    });
+    return row;
+  });
+
+  const syData = [
+    { metric: "Specific Yield (kWh/kWp)", key: "specificYield" },
+    { metric: "Capacity Factor (%)",       key: "capacityFactor" },
+    { metric: "Performance Ratio (%)",     key: "performanceRatio", scale: 100 },
+  ].map((def) => {
+    const row = { metric: def.metric };
+    plants.forEach((p) => {
+      const val = p[def.key] ?? null;
+      row[p.id] = val !== null ? parseFloat(((def.scale || 1) * val).toFixed(2)) : null;
     });
     return row;
   });
@@ -256,7 +293,7 @@ export default function Compare() {
               </div>
 
               {/* Charts */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 20 }}>
                 {/* Radar */}
                 <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)" }}>
                   <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Performance Profile (normalised)</div>
@@ -289,6 +326,96 @@ export default function Compare() {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
+              </div>
+
+              {/* Specific Yield & Performance metrics */}
+              <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)", marginBottom: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Specific Yield &amp; Performance Metrics</div>
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 16 }}>
+                  Benchmarks: Excellent ≥ {BENCHMARKS.specificYield.excellent} kWh/kWp · Good ≥ {BENCHMARKS.specificYield.good} · Fair ≥ {BENCHMARKS.specificYield.fair}
+                </div>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={syData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-light)" vertical={false} />
+                    <XAxis dataKey="metric" tick={{ fontSize: 11 }} tickLine={false} axisLine={false} />
+                    <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+                    <Tooltip />
+                    <Legend iconType="square" iconSize={10} />
+                    {plants.map((p, i) => (
+                      <Bar key={p.id} dataKey={p.id} name={p.name.split(" ").slice(-2).join(" ")} fill={CHART_PALETTE[i]} radius={[3, 3, 0, 0]} />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Historical period comparison */}
+              <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)" }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Historical Period Comparison</div>
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 14 }}>Compare all selected plants over the same historical date range</div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+                  <div>
+                    <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>Start date</label>
+                    <input type="date" value={`${hStart.slice(0,4)}-${hStart.slice(4,6)}-${hStart.slice(6,8)}`}
+                      onChange={(e) => setHStart(e.target.value.replace(/-/g, ""))} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>End date</label>
+                    <input type="date" value={`${hEnd.slice(0,4)}-${hEnd.slice(4,6)}-${hEnd.slice(6,8)}`}
+                      onChange={(e) => setHEnd(e.target.value.replace(/-/g, ""))} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>Granularity</label>
+                    <select value={hGran} onChange={(e) => setHGran(e.target.value)} style={{ fontSize: 12 }}>
+                      <option value="daily">Daily</option>
+                      <option value="monthly">Monthly</option>
+                    </select>
+                  </div>
+                  <button onClick={runHistory} disabled={hLoading || selected.length < 1}
+                    style={{ background: "var(--sb-blue)", color: "#fff", border: "none", fontWeight: 600, padding: "9px 20px", alignSelf: "flex-end" }}>
+                    {hLoading ? "Loading…" : "Load historical data"}
+                  </button>
+                </div>
+                {hError && <div style={{ color: "#DC2626", fontSize: 12, marginBottom: 10 }}>{hError}</div>}
+                {hData && (
+                  <>
+                    {/* Totals table */}
+                    <div style={{ overflowX: "auto", marginBottom: 16 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead>
+                          <tr style={{ background: "var(--color-background-secondary)" }}>
+                            {["Plant", "Total Energy (kWh)", "Avg Daily SY (kWh/kWp)"].map((h) => (
+                              <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)" }}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {hData.plants.map((p, i) => (
+                            <tr key={p.id} style={{ borderTop: "1px solid var(--color-border-light)" }}>
+                              <td style={{ padding: "8px 12px", fontWeight: 500, color: CHART_PALETTE[i] }}>{p.name}</td>
+                              <td style={{ padding: "8px 12px" }}>{fmt(Math.round(p.totalEnergy))}</td>
+                              <td style={{ padding: "8px 12px" }}>{p.avgDailySY != null ? fmtDec(p.avgDailySY) : "—"}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Line chart overlay */}
+                    <ResponsiveContainer width="100%" height={260}>
+                      <LineChart margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-light)" vertical={false} />
+                        <XAxis dataKey="date" type="category" allowDuplicatedCategory={false} tick={{ fontSize: 9 }} tickLine={false} axisLine={false}
+                          tickFormatter={(d) => hGran === "monthly" ? d : d.slice(5)} />
+                        <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+                        <Tooltip labelFormatter={(d) => d} formatter={(v, n) => [v + " kWh", n]} />
+                        <Legend iconType="circle" iconSize={10} />
+                        {hData.plants.map((p, i) => (
+                          <Line key={p.id} data={p.series} dataKey="energy" name={p.name.split(" ").slice(-2).join(" ")}
+                            stroke={CHART_PALETTE[i]} strokeWidth={2} dot={false} connectNulls />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </>
+                )}
               </div>
             </>
           )}

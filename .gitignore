@@ -40,3 +40,4 @@ frontend/.vite/
 .idea/
 *.swp
 *.swo
+.vercel

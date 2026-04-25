@@ -82,6 +82,13 @@ PR_EXCELLENT = 0.80
 PR_GOOD      = 0.70
 PR_FAIR      = 0.55
 
+# Specific yield thresholds (kWh/kWp/day) — India context
+SY_EXCELLENT = 4.5
+SY_GOOD      = 3.5
+SY_FAIR      = 2.5
+
+_GRADE_RANK = {"Excellent": 0, "Good": 1, "Fair": 2, "Poor": 3}
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -152,6 +159,22 @@ def init_db():
             UNIQUE(date, plant_id)
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS alert_history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            plant_id    TEXT NOT NULL,
+            plant_name  TEXT,
+            device_sn   TEXT,
+            fault_code  TEXT NOT NULL,
+            fault_name  TEXT,
+            severity    TEXT,
+            begin_time  TEXT,
+            end_time    TEXT,
+            captured_at TEXT NOT NULL
+        )
+    """)
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ah_plant ON alert_history (plant_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_ah_time  ON alert_history (begin_time)")
     # Seed admin
     existing = c.execute("SELECT id FROM users WHERE username=?", (ADMIN_USERNAME,)).fetchone()
     if not existing:
@@ -779,25 +802,50 @@ def compute_plant_stats(plant: dict, tariff: float = None) -> dict:
     co2_avoided      = _normalise_co2_tonnes(co2_avoided_raw)
     revenue_today    = round(today_e * effective_tariff, 2)
 
+    # Grade by PR
     if perf_ratio is None:
-        grade = "N/A"
+        pr_grade = "N/A"
     elif perf_ratio >= PR_EXCELLENT:
-        grade = "Excellent"
+        pr_grade = "Excellent"
     elif perf_ratio >= PR_GOOD:
-        grade = "Good"
+        pr_grade = "Good"
     elif perf_ratio >= PR_FAIR:
-        grade = "Fair"
+        pr_grade = "Fair"
     else:
-        grade = "Poor"
+        pr_grade = "Poor"
+
+    # Grade by specific yield (kWh/kWp/day)
+    if specific_yield is None:
+        sy_grade = "N/A"
+    elif specific_yield >= SY_EXCELLENT:
+        sy_grade = "Excellent"
+    elif specific_yield >= SY_GOOD:
+        sy_grade = "Good"
+    elif specific_yield >= SY_FAIR:
+        sy_grade = "Fair"
+    else:
+        sy_grade = "Poor"
+
+    # Composite: take the worse of the two grades
+    if pr_grade == "N/A" and sy_grade == "N/A":
+        grade = "N/A"
+    elif pr_grade == "N/A":
+        grade = sy_grade
+    elif sy_grade == "N/A":
+        grade = pr_grade
+    else:
+        grade = max(pr_grade, sy_grade, key=lambda g: _GRADE_RANK.get(g, 3))
 
     plant.update({
         "specificYield":    specific_yield,
         "performanceRatio": perf_ratio,
         "capacityFactor":   capacity_factor,
-        "co2Avoided":       co2_avoided,        # tonnes
-        "co2AvoidedTonnes": co2_avoided,        # alias — guaranteed tonnes
+        "co2Avoided":       co2_avoided,
+        "co2AvoidedTonnes": co2_avoided,
         "revenueToday":     revenue_today,
         "grade":            grade,
+        "gradeByPR":        pr_grade,
+        "gradeBySY":        sy_grade,
         "peakSunHours":     PEAK_SUN_HOURS,
         "tariffPerKwh":     effective_tariff,
     })
@@ -1504,6 +1552,9 @@ def _get_all_settings(conn):
         "prExcellent":   float(s.get("pr_excellent", PR_EXCELLENT)),
         "prGood":        float(s.get("pr_good", PR_GOOD)),
         "prFair":        float(s.get("pr_fair", PR_FAIR)),
+        "syExcellent":   SY_EXCELLENT,
+        "syGood":        SY_GOOD,
+        "syFair":        SY_FAIR,
         "currency":      s.get("currency", "INR"),
         "timezone":      s.get("timezone", "Asia/Kolkata"),
         "companyName":   s.get("company_name", "SolarBull Energy"),
@@ -1689,6 +1740,8 @@ def all_notifications(current_user):
                     "plantStatus": p.get("status"),
                 })
         all_errors.sort(key=lambda x: (sev_order.get(x.get("severity"), 1), x.get("timestamp", "")))
+        # Persist to alert_history so we can query past alerts
+        _persist_alerts(all_errors, plants)
         counts = {
             "total":  len(all_errors),
             "high":   sum(1 for e in all_errors if e.get("severity") == "high"),
@@ -1699,6 +1752,103 @@ def all_notifications(current_user):
         return jsonify({"notifications": all_errors, "counts": counts})
     except Exception as e:
         log.error("Notifications failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+def _persist_alerts(all_errors: list, plants: list):
+    """Store current active alerts into alert_history (de-duped by plant+code+begin_time)."""
+    if not all_errors:
+        return
+    plant_name_map = {p["id"]: p["name"] for p in plants}
+    now = datetime.now().isoformat()
+    try:
+        conn = get_db()
+        c = conn.cursor()
+        for e in all_errors:
+            pid  = str(e.get("plantId", ""))
+            code = str(e.get("code", ""))
+            bt   = e.get("timestamp") or now
+            # Only insert if not already recorded today for this plant+code
+            exists = c.execute(
+                "SELECT 1 FROM alert_history WHERE plant_id=? AND fault_code=? AND begin_time=? LIMIT 1",
+                (pid, code, bt)
+            ).fetchone()
+            if not exists:
+                c.execute(
+                    "INSERT INTO alert_history (plant_id,plant_name,device_sn,fault_code,fault_name,"
+                    "severity,begin_time,end_time,captured_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (pid, plant_name_map.get(pid, ""), e.get("deviceSn", ""), code,
+                     e.get("desc", ""), e.get("severity", "medium"), bt, None, now)
+                )
+        conn.commit()
+        conn.close()
+    except Exception as ex:
+        log.warning("Alert persist failed: %s", ex)
+
+
+@app.route("/api/alerts/history")
+@require_role()
+def alert_history_endpoint(current_user):
+    """Query stored alert history. Params: plant_id (optional), start (YYYY-MM-DD), end (YYYY-MM-DD)."""
+    plant_id = request.args.get("plant_id", "")
+    start    = request.args.get("start", "")
+    end      = request.args.get("end", (datetime.now()).strftime("%Y-%m-%d"))
+    severity = request.args.get("severity", "")
+    page     = int(request.args.get("page", 1))
+    size     = min(int(request.args.get("size", 200)), 500)
+
+    # Default start = 90 days ago if not supplied
+    if not start:
+        start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+
+    try:
+        conn = get_db()
+        # Access check: restrict non-admin to their own plants
+        allowed_ids = None
+        if current_user["role"] != "admin":
+            allowed_ids = set(json.loads(current_user["plant_ids"] or "[]"))
+
+        where_clauses = ["begin_time >= ?", "begin_time <= ?"]
+        params: list = [start, end + "T23:59:59"]
+        if plant_id:
+            where_clauses.append("plant_id = ?")
+            params.append(plant_id)
+        if severity:
+            where_clauses.append("severity = ?")
+            params.append(severity)
+
+        where = " AND ".join(where_clauses)
+        offset = (page - 1) * size
+
+        rows = conn.execute(
+            f"SELECT * FROM alert_history WHERE {where} ORDER BY begin_time DESC LIMIT ? OFFSET ?",
+            params + [size, offset]
+        ).fetchall()
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM alert_history WHERE {where}", params
+        ).fetchone()[0]
+        conn.close()
+
+        alerts = []
+        for r in rows:
+            row = dict(r)
+            if allowed_ids and row["plant_id"] not in allowed_ids:
+                continue
+            alerts.append({
+                "id":        row["id"],
+                "plantId":   row["plant_id"],
+                "plantName": row["plant_name"],
+                "deviceSn":  row["device_sn"],
+                "code":      row["fault_code"],
+                "desc":      row["fault_name"],
+                "severity":  row["severity"],
+                "timestamp": row["begin_time"],
+                "endTime":   row["end_time"],
+                "capturedAt": row["captured_at"],
+            })
+        return jsonify({"alerts": alerts, "total": total, "page": page, "size": size})
+    except Exception as e:
+        log.error("Alert history failed: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
@@ -1725,6 +1875,133 @@ def compare_plants(current_user):
         return jsonify({"plants": selected})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/compare/history")
+@require_role()
+def compare_history(current_user):
+    """Compare up to 8 plants over a historical date range.
+    Params: ids (comma-sep), start (YYYYMMDD), end (YYYYMMDD), granularity (daily|monthly)
+    Returns per-plant totals + daily/monthly series for energy and specific yield.
+    """
+    ids_param   = request.args.get("ids", "")
+    start_str   = request.args.get("start", "")
+    end_str     = request.args.get("end", "")
+    granularity = request.args.get("granularity", "daily")
+
+    plant_ids = [x.strip() for x in ids_param.split(",") if x.strip()]
+    if not plant_ids:
+        return jsonify({"error": "ids required"}), 400
+    if len(plant_ids) > 8:
+        return jsonify({"error": "Max 8 plants"}), 400
+    if not start_str or not end_str:
+        return jsonify({"error": "start and end required (YYYYMMDD)"}), 400
+
+    try:
+        dt_start = datetime.strptime(start_str, "%Y%m%d")
+        dt_end   = datetime.strptime(end_str,   "%Y%m%d")
+    except ValueError:
+        return jsonify({"error": "Use YYYYMMDD format"}), 400
+
+    if current_user["role"] != "admin":
+        allowed = set(json.loads(current_user["plant_ids"] or "[]"))
+        plant_ids = [p for p in plant_ids if p in allowed]
+
+    def fetch_plant_range(pid):
+        data = {}
+        cur = dt_start.replace(day=1)
+        while cur <= dt_end:
+            month_key = cur.strftime("%Y%m")
+            try:
+                if USE_DEMO or not SUNGROW_APPKEY:
+                    import calendar, random
+                    _, days_in = calendar.monthrange(cur.year, cur.month)
+                    for d in range(1, days_in + 1):
+                        try: date = cur.replace(day=d)
+                        except ValueError: break
+                        if dt_start <= date <= dt_end:
+                            data[date.strftime("%Y-%m-%d")] = round(350 * (0.7 + random.random() * 0.5), 1)
+                else:
+                    import calendar
+                    raw = client.get_chart_data(pid, month_key, "2", "p83022")
+                    if raw and isinstance(raw, dict):
+                        pts = raw.get("data_points", raw.get("points", []))
+                        _, days_in = calendar.monthrange(cur.year, cur.month)
+                        for d in range(1, days_in + 1):
+                            try: date = cur.replace(day=d)
+                            except ValueError: break
+                            if dt_start <= date <= dt_end:
+                                key = date.strftime("%Y-%m-%d")
+                                val = 0
+                                if d - 1 < len(pts):
+                                    rv = pts[d - 1].get("value") if isinstance(pts[d - 1], dict) else None
+                                    if rv is not None and rv != "--":
+                                        try: val = round(float(rv), 1)
+                                        except (ValueError, TypeError): pass
+                                data[key] = val
+            except Exception as ex:
+                log.warning("compare_history %s %s: %s", pid, month_key, ex)
+            cur = cur.replace(month=cur.month % 12 + 1) if cur.month < 12 else cur.replace(year=cur.year + 1, month=1)
+        fill = dt_start
+        while fill <= dt_end:
+            data.setdefault(fill.strftime("%Y-%m-%d"), 0)
+            fill += timedelta(days=1)
+        return pid, data
+
+    # Fetch all plants in parallel
+    all_plants_data = {}
+    with ThreadPoolExecutor(max_workers=min(len(plant_ids), 4)) as ex:
+        futures = {ex.submit(fetch_plant_range, pid): pid for pid in plant_ids}
+        for f in as_completed(futures):
+            pid, data = f.result()
+            all_plants_data[pid] = data
+
+    # Get plant metadata (name, capacity) from summary
+    plants_meta = {}
+    try:
+        if USE_DEMO or not SUNGROW_APPKEY:
+            summary = generate_demo_data()
+        else:
+            summary = client._cached("all_plants_summary", client._fetch_all_plants_summary, ttl=300)
+        for p in summary:
+            if p["id"] in plant_ids:
+                plants_meta[p["id"]] = {"name": p["name"], "capacity": p.get("capacity") or 0}
+    except Exception:
+        pass
+
+    # Build result per plant
+    result = []
+    for pid in plant_ids:
+        daily = all_plants_data.get(pid, {})
+        total = sum(daily.values())
+        capacity = plants_meta.get(pid, {}).get("capacity") or 0
+        days = len(daily)
+        avg_sy = round(total / capacity / days, 3) if (capacity > 0 and days > 0) else None
+
+        if granularity == "monthly":
+            grouped = {}
+            for date_str, val in daily.items():
+                mon = date_str[:7]
+                grouped[mon] = grouped.get(mon, 0) + val
+            series = [{"date": k, "energy": round(v, 1)} for k, v in sorted(grouped.items())]
+        else:
+            series = [{"date": k, "energy": v} for k, v in sorted(daily.items())]
+
+        result.append({
+            "id":           pid,
+            "name":         plants_meta.get(pid, {}).get("name", pid),
+            "capacity":     capacity,
+            "totalEnergy":  round(total, 1),
+            "avgDailySY":   avg_sy,
+            "series":       series,
+        })
+
+    return jsonify({
+        "plants":      result,
+        "startDate":   dt_start.strftime("%d %b %Y"),
+        "endDate":     dt_end.strftime("%d %b %Y"),
+        "granularity": granularity,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1986,16 +2263,17 @@ def period_compare(plant_id, current_user):
         return jsonify({"error": "Invalid date format. Use YYYYMMDD."}), 400
 
     def fetch_range(start_dt, end_dt):
-        """Fetch daily energy for a date range using monthly chart API."""
-        import random
+        """Fetch daily energy for every day in [start_dt, end_dt].
+        Days without API data are included with value 0 so the chart renders blank
+        columns rather than connecting-null gaps.
+        """
+        import random, calendar
         data = {}
         cur = start_dt.replace(day=1)
         while cur <= end_dt:
             month_key = cur.strftime("%Y%m")
             try:
                 if USE_DEMO or not SUNGROW_APPKEY:
-                    # Demo: generate plausible daily data
-                    import calendar
                     _, days_in = calendar.monthrange(cur.year, cur.month)
                     for d in range(1, days_in + 1):
                         try:
@@ -2008,21 +2286,32 @@ def period_compare(plant_id, current_user):
                     raw = client.get_chart_data(plant_id, month_key, "2", "p83022")
                     if raw and isinstance(raw, dict):
                         pts = raw.get("data_points", raw.get("points", []))
-                        for idx, p in enumerate(pts):
+                        _, days_in = calendar.monthrange(cur.year, cur.month)
+                        for d in range(1, days_in + 1):
                             try:
-                                date = cur.replace(day=idx + 1)
+                                date = cur.replace(day=d)
                             except ValueError:
                                 break
                             if start_dt <= date <= end_dt:
-                                val = p.get("value")
-                                if val is not None and val != "--":
-                                    try:
-                                        data[date.strftime("%Y-%m-%d")] = round(float(val), 1)
-                                    except (ValueError, TypeError):
-                                        pass
+                                key = date.strftime("%Y-%m-%d")
+                                val = None
+                                # API array is 1-indexed by day number
+                                if d - 1 < len(pts):
+                                    raw_val = pts[d - 1].get("value") if isinstance(pts[d - 1], dict) else None
+                                    if raw_val is not None and raw_val != "--":
+                                        try:
+                                            val = round(float(raw_val), 1)
+                                        except (ValueError, TypeError):
+                                            pass
+                                data[key] = val if val is not None else 0
             except Exception as e:
                 log.warning("Period compare fetch %s failed: %s", month_key, e)
             cur = cur.replace(month=cur.month % 12 + 1) if cur.month < 12 else cur.replace(year=cur.year + 1, month=1)
+        # Guarantee every day in range has an entry (0 if nothing above matched)
+        fill = start_dt
+        while fill <= end_dt:
+            data.setdefault(fill.strftime("%Y-%m-%d"), 0)
+            fill += timedelta(days=1)
         return data
 
     try:
@@ -2042,8 +2331,10 @@ def period_compare(plant_id, current_user):
             series.append(row)
 
         s1, s2  = sum(d1.values()), sum(d2.values())
-        avg1    = s1 / len(d1) if d1 else 0
-        avg2    = s2 / len(d2) if d2 else 0
+        d1_with_data = {k: v for k, v in d1.items() if v > 0}
+        d2_with_data = {k: v for k, v in d2.items() if v > 0}
+        avg1 = s1 / len(d1_with_data) if d1_with_data else 0
+        avg2 = s2 / len(d2_with_data) if d2_with_data else 0
         return jsonify({
             "plant_id": plant_id,
             "period1":  {"label": f"{dt_p1s.strftime('%d %b %Y')} – {dt_p1e.strftime('%d %b %Y')}",
@@ -2052,12 +2343,17 @@ def period_compare(plant_id, current_user):
                          "data":  [{"date": k, "energy": v} for k, v in sorted(d2.items())]},
             "series":   series,
             "summary": {
-                "p1Total": round(s1, 1), "p2Total": round(s2, 1),
-                "p1Avg":   round(avg1, 1), "p2Avg": round(avg2, 1),
-                "p1Best":  round(max(d1.values(), default=0), 1),
-                "p2Best":  round(max(d2.values(), default=0), 1),
-                "change":  round((s2 - s1) / s1 * 100, 1) if s1 else None,
-                "days1":   len(d1), "days2": len(d2),
+                "p1Total":        round(s1, 1),
+                "p2Total":        round(s2, 1),
+                "p1Avg":          round(avg1, 1),
+                "p2Avg":          round(avg2, 1),
+                "p1Best":         round(max(d1_with_data.values(), default=0), 1),
+                "p2Best":         round(max(d2_with_data.values(), default=0), 1),
+                "change":         round((s2 - s1) / s1 * 100, 1) if s1 else None,
+                "days1":          len(d1),
+                "days2":          len(d2),
+                "days1WithData":  len(d1_with_data),
+                "days2WithData":  len(d2_with_data),
             },
         })
     except Exception as e:

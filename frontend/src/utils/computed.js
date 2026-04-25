@@ -5,7 +5,7 @@ export const CO2_FACTOR = 0.82;
 // India-context benchmarks
 export const BENCHMARKS = {
   pr:            { excellent: 0.80, good: 0.70, fair: 0.55 },
-  specificYield: { excellent: 5.5,  good: 4.5,  fair: 3.5  }, // kWh/kWp/day
+  specificYield: { excellent: 4.5,  good: 3.5,  fair: 2.5  }, // kWh/kWp/day (matches server SY_EXCELLENT/GOOD/FAIR)
   availability:  { excellent: 0.98, good: 0.95, fair: 0.90 },
   panelEff:      { typical: 0.22,   range: "22–24%" },
   inverterEff:   { typical: 0.97,   range: "97–99%" },
@@ -35,6 +35,14 @@ export function gradeFromPR(pr) {
   if (pr >= BENCHMARKS.pr.excellent)  return "Excellent";
   if (pr >= BENCHMARKS.pr.good)       return "Good";
   if (pr >= BENCHMARKS.pr.fair)       return "Fair";
+  return "Poor";
+}
+
+export function gradeFromSY(sy) {
+  if (sy === null || sy === undefined) return "N/A";
+  if (sy >= BENCHMARKS.specificYield.excellent) return "Excellent";
+  if (sy >= BENCHMARKS.specificYield.good)      return "Good";
+  if (sy >= BENCHMARKS.specificYield.fair)      return "Fair";
   return "Poor";
 }
 

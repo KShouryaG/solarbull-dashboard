@@ -92,10 +92,22 @@ export const getInverters = (plantId) => get(`/api/plants/${plantId}/inverters`)
 export const getSettings  = ()     => get("/api/settings");
 export const saveSettings = (data) => put("/api/settings", data);
 
-// Period comparison
+// Period comparison (single plant)
 export const getPeriodCompare = (plantId, p) => {
   const qs = new URLSearchParams(p).toString();
   return get(`/api/plants/${plantId}/period-compare?${qs}`);
+};
+
+// Multi-plant historical comparison
+export const getCompareHistory = (ids, start, end, granularity = "daily") =>
+  get(`/api/compare/history?ids=${ids.join(",")}&start=${start}&end=${end}&granularity=${granularity}`);
+
+// Alert history
+export const getAlertHistory = (params = {}) => {
+  const qs = new URLSearchParams(
+    Object.fromEntries(Object.entries(params).filter(([, v]) => v))
+  ).toString();
+  return get(`/api/alerts/history${qs ? "?" + qs : ""}`);
 };
 
 // AI Chatbot

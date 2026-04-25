@@ -899,15 +899,61 @@ function FinancialTab({ plant, kpis, co2Total, trees, coal, homes, rev30, rev365
 // ─── Period Compare Tab ──────────────────────────────────────────────────────
 function PeriodCompareTab({ plantId }) {
   const today   = new Date();
-  const nAgo    = (n) => { const d = new Date(today); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+  const iso     = (d) => d.toISOString().slice(0, 10);
+  const nAgo    = (n) => { const d = new Date(today); d.setDate(d.getDate() - n); return iso(d); };
+  const monthStart = (d) => iso(new Date(d.getFullYear(), d.getMonth(), 1));
+  const monthEnd   = (d) => iso(new Date(d.getFullYear(), d.getMonth() + 1, 0));
 
   const [p1Start, setP1Start] = useState(nAgo(60));
   const [p1End,   setP1End]   = useState(nAgo(31));
   const [p2Start, setP2Start] = useState(nAgo(30));
-  const [p2End,   setP2End]   = useState(today.toISOString().slice(0, 10));
+  const [p2End,   setP2End]   = useState(iso(today));
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
+
+  // Quick preset presets
+  const presets = [
+    {
+      label: "Same month last year",
+      apply: () => {
+        const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+        const thisMonthEnd   = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+        const lastYearStart  = new Date(today.getFullYear() - 1, today.getMonth(), 1);
+        const lastYearEnd    = new Date(today.getFullYear() - 1, today.getMonth() + 1, 0);
+        setP1Start(iso(lastYearStart)); setP1End(iso(lastYearEnd));
+        setP2Start(iso(thisMonthStart)); setP2End(iso(thisMonthEnd));
+      },
+    },
+    {
+      label: "Last month vs prev",
+      apply: () => {
+        const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        const lastMonthEnd   = new Date(today.getFullYear(), today.getMonth(), 0);
+        const prevMonthStart = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+        const prevMonthEnd   = new Date(today.getFullYear(), today.getMonth() - 1, 0);
+        setP1Start(iso(prevMonthStart)); setP1End(iso(prevMonthEnd));
+        setP2Start(iso(lastMonthStart)); setP2End(iso(lastMonthEnd));
+      },
+    },
+    {
+      label: "Last 30 vs prev 30",
+      apply: () => {
+        setP1Start(nAgo(60)); setP1End(nAgo(31));
+        setP2Start(nAgo(30)); setP2End(iso(today));
+      },
+    },
+    {
+      label: "YTD vs same YTD last year",
+      apply: () => {
+        const ytdStart     = iso(new Date(today.getFullYear(), 0, 1));
+        const ly_ytdStart  = iso(new Date(today.getFullYear() - 1, 0, 1));
+        const ly_ytdEnd    = iso(new Date(today.getFullYear() - 1, today.getMonth(), today.getDate()));
+        setP1Start(ly_ytdStart); setP1End(ly_ytdEnd);
+        setP2Start(ytdStart);    setP2End(iso(today));
+      },
+    },
+  ];
 
   const run = async () => {
     setLoading(true); setError(""); setData(null);
@@ -944,7 +990,16 @@ function PeriodCompareTab({ plantId }) {
   return (
     <div>
       <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)", marginBottom: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>Select Comparison Periods</div>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 12 }}>Select Comparison Periods</div>
+        {/* Quick presets */}
+        <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 11, color: "var(--color-text-secondary)", alignSelf: "center", marginRight: 4 }}>Quick:</span>
+          {presets.map((p) => (
+            <button key={p.label} onClick={p.apply} style={{ fontSize: 11, padding: "4px 12px", background: "var(--color-background-secondary)", border: "1px solid var(--color-border-light)", borderRadius: 16, color: "var(--sb-blue)", fontWeight: 500, cursor: "pointer" }}>
+              {p.label}
+            </button>
+          ))}
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
           {[["Period 1 (baseline)", p1Start, setP1Start, p1End, setP1End, "#F7941D"],
             ["Period 2 (comparison)", p2Start, setP2Start, p2End, setP2End, "#1E5BA6"]].map(([label, s, setS, e, setE, color]) => (
@@ -972,10 +1027,11 @@ function PeriodCompareTab({ plantId }) {
 
       {data && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
             {cmpCard("Total Energy (kWh)", data.summary.p1Total, data.summary.p2Total)}
             {cmpCard("Daily Average (kWh)", data.summary.p1Avg, data.summary.p2Avg)}
             {cmpCard("Best Day (kWh)", data.summary.p1Best, data.summary.p2Best)}
+            {cmpCard("Days With Data", data.summary.days1WithData ?? data.summary.days1, data.summary.days2WithData ?? data.summary.days2)}
             {cmpCard("Days Covered", data.summary.days1, data.summary.days2)}
           </div>
           <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 20, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)", marginBottom: 20 }}>

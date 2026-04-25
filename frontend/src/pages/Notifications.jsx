@@ -1,16 +1,28 @@
 import { useState, useEffect, useMemo } from "react";
-import { getNotifications } from "../api.js";
+import { getNotifications, getAlertHistory } from "../api.js";
 import { SeverityBadge, StatusBadge } from "../components/Badge.jsx";
 import { formatDate } from "../utils/format.js";
 import { useNavigate } from "react-router-dom";
 
 export default function Notifications() {
   const navigate = useNavigate();
+  const [tab,       setTab]       = useState("active");  // active | history
   const [data,      setData]      = useState(null);
   const [loading,   setLoading]   = useState(true);
   const [filter,    setFilter]    = useState("all");
   const [search,    setSearch]    = useState("");
   const [sortBy,    setSortBy]    = useState("severity");
+
+  // History tab state
+  const today    = new Date();
+  const isoDate  = (d) => d.toISOString().slice(0, 10);
+  const [hStart, setHStart]   = useState(isoDate(new Date(today.getFullYear(), today.getMonth() - 2, 1)));
+  const [hEnd,   setHEnd]     = useState(isoDate(today));
+  const [hSev,   setHSev]     = useState("");
+  const [hSearch,setHSearch]  = useState("");
+  const [hData,  setHData]    = useState(null);
+  const [hLoading,setHLoading]= useState(false);
+  const [hError, setHError]   = useState("");
 
   const load = async (force = false) => {
     if (force) setLoading(true);
@@ -19,6 +31,15 @@ export default function Notifications() {
       setData(d);
     } catch (e) { console.error(e); }
     setLoading(false);
+  };
+
+  const loadHistory = async () => {
+    setHLoading(true); setHError(""); setHData(null);
+    try {
+      const d = await getAlertHistory({ start: hStart, end: hEnd, severity: hSev });
+      setHData(d);
+    } catch (e) { setHError(e.message || "Failed to load history"); }
+    setHLoading(false);
   };
 
   useEffect(() => { load(); }, []);
@@ -48,14 +69,113 @@ export default function Notifications() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>Notification Center</h1>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>
-            All active alarms and faults across your fleet
+            {tab === "active" ? "All active alarms and faults across your fleet" : "Historical alert log across your fleet"}
           </div>
         </div>
-        <button onClick={() => load(true)} disabled={loading} style={{ background: "var(--sb-orange)", color: "#fff", border: "none", fontWeight: 600, padding: "8px 16px" }}>
-          {loading ? "Loading…" : "↻ Refresh"}
-        </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {/* Tab switcher */}
+          <div style={{ display: "flex", background: "var(--color-background-secondary)", borderRadius: 8, padding: 3, gap: 2 }}>
+            {[["active","Active Alerts"],["history","Alert History"]].map(([v, l]) => (
+              <button key={v} onClick={() => setTab(v)} style={{
+                padding: "6px 16px", fontSize: 12, fontWeight: tab === v ? 600 : 400,
+                background: tab === v ? "var(--color-background-primary)" : "transparent",
+                color: tab === v ? "var(--sb-blue)" : "var(--color-text-secondary)",
+                border: tab === v ? "1px solid var(--color-border-light)" : "none",
+                borderRadius: 6,
+              }}>{l}</button>
+            ))}
+          </div>
+          {tab === "active" && (
+            <button onClick={() => load(true)} disabled={loading} style={{ background: "var(--sb-orange)", color: "#fff", border: "none", fontWeight: 600, padding: "8px 16px" }}>
+              {loading ? "Loading…" : "↻ Refresh"}
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* ── History tab ── */}
+      {tab === "history" && (
+        <div>
+          {/* Filters */}
+          <div style={{ background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", padding: 16, boxShadow: "var(--shadow-sm)", border: "1px solid var(--color-border-light)", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Filter historical alerts</div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>From</label>
+                <input type="date" value={hStart} onChange={(e) => setHStart(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>To</label>
+                <input type="date" value={hEnd} onChange={(e) => setHEnd(e.target.value)} />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--color-text-secondary)", display: "block", marginBottom: 3 }}>Severity</label>
+                <select value={hSev} onChange={(e) => setHSev(e.target.value)} style={{ fontSize: 12 }}>
+                  <option value="">All</option>
+                  <option value="high">Critical</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
+              <button onClick={loadHistory} disabled={hLoading}
+                style={{ background: "var(--sb-blue)", color: "#fff", border: "none", fontWeight: 600, padding: "9px 20px" }}>
+                {hLoading ? "Loading…" : "Search"}
+              </button>
+            </div>
+          </div>
+
+          {hError && <div style={{ color: "#DC2626", fontSize: 12, marginBottom: 10 }}>{hError}</div>}
+
+          {!hData && !hLoading && (
+            <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)", background: "var(--color-background-primary)", borderRadius: "var(--border-radius-lg)", border: "1px solid var(--color-border-light)" }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>🕐</div>
+              <div style={{ fontWeight: 600 }}>Select a date range and click Search</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>Alert history is recorded each time the notification panel is refreshed</div>
+            </div>
+          )}
+
+          {hData && (
+            <div>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+                {hData.total} alerts found · showing {hData.alerts.length}
+              </div>
+              <div>
+                <input value={hSearch} onChange={(e) => setHSearch(e.target.value)} placeholder="Filter by plant, code, description…"
+                  style={{ width: "100%", maxWidth: 340, marginBottom: 12 }} />
+              </div>
+              {hData.alerts
+                .filter((a) => !hSearch || [a.plantName, a.code, a.desc].some((f) => (f || "").toLowerCase().includes(hSearch.toLowerCase())))
+                .map((a, i) => (
+                <div key={i} style={{
+                  background: "var(--color-background-primary)", borderRadius: 8, padding: "12px 16px", marginBottom: 6,
+                  border: "1px solid var(--color-border-light)",
+                  borderLeft: `4px solid ${a.severity === "high" ? "#DC2626" : a.severity === "medium" ? "#F7941D" : "#6B7280"}`,
+                  display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 14, alignItems: "center",
+                }}>
+                  <SeverityBadge severity={a.severity} />
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                      <span style={{ fontSize: 11, fontFamily: "monospace", fontWeight: 700, background: "var(--color-background-secondary)", padding: "2px 6px", borderRadius: 4 }}>{a.code}</span>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>{a.desc}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                      <span style={{ color: "var(--sb-blue)", cursor: "pointer" }} onClick={() => navigate(`/plants/${a.plantId}`)}>{a.plantName}</span>
+                      {a.deviceSn && <span> · {a.deviceSn}</span>}
+                      {a.timestamp && <span> · {formatDate(a.timestamp, { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>}
+                    </div>
+                  </div>
+                  <button onClick={() => navigate(`/plants/${a.plantId}`)} style={{ padding: "5px 12px", fontSize: 11, background: "transparent", border: "1px solid var(--color-border-light)", borderRadius: 6, color: "var(--sb-blue)", cursor: "pointer" }}>
+                    View →
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Active tab ── */}
+      {tab === "active" && <>
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 20 }}>
         {[
@@ -119,7 +239,7 @@ export default function Notifications() {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {filtered.map((n, i) => (
-            <div key={i} style={{
+            <div key={`active-${i}`} style={{
               background: "var(--color-background-primary)",
               borderRadius: "var(--border-radius-lg)",
               padding: "14px 18px",
@@ -168,6 +288,7 @@ export default function Notifications() {
           ))}
         </div>
       )}
+      </>}
     </div>
   );
 }

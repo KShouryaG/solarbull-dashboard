@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { usePlants } from "../context/PlantContext.jsx";
 import { GradeBadge, StatusBadge } from "../components/Badge.jsx";
 import { fmtDec, fmtPct, fmt } from "../utils/format.js";
-import { GRADE_COLORS, GRADE_BG, BENCHMARKS } from "../utils/computed.js";
+import { GRADE_COLORS, GRADE_BG, BENCHMARKS, gradeFromSY } from "../utils/computed.js";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, ReferenceLine,
 } from "recharts";
@@ -83,18 +83,22 @@ export default function Rankings() {
         </div>
       </div>
 
-      {/* Grade legend */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        {["Excellent", "Good", "Fair", "Poor"].map((g) => (
-          <div key={g} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-            <div style={{ width: 12, height: 12, borderRadius: 3, background: GRADE_COLORS[g] }} />
-            <span style={{ color: GRADE_COLORS[g], fontWeight: 600 }}>{g}</span>
-            {g === "Excellent" && <span style={{ color: "var(--color-text-tertiary)" }}>(PR ≥ {BENCHMARKS.pr.excellent*100}%)</span>}
-            {g === "Good"      && <span style={{ color: "var(--color-text-tertiary)" }}>(PR ≥ {BENCHMARKS.pr.good*100}%)</span>}
-            {g === "Fair"      && <span style={{ color: "var(--color-text-tertiary)" }}>(PR ≥ {BENCHMARKS.pr.fair*100}%)</span>}
-            {g === "Poor"      && <span style={{ color: "var(--color-text-tertiary)" }}>(PR &lt; {BENCHMARKS.pr.fair*100}%)</span>}
-          </div>
-        ))}
+      {/* Grade legend — adapts to selected sort metric */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+        {["Excellent", "Good", "Fair", "Poor"].map((g) => {
+          const isSY = sortBy === "specificYield";
+          const thresholds = isSY
+            ? { Excellent: `SY ≥ ${BENCHMARKS.specificYield.excellent}`, Good: `SY ≥ ${BENCHMARKS.specificYield.good}`, Fair: `SY ≥ ${BENCHMARKS.specificYield.fair}`, Poor: `SY < ${BENCHMARKS.specificYield.fair}` }
+            : { Excellent: `PR ≥ ${BENCHMARKS.pr.excellent*100}%`, Good: `PR ≥ ${BENCHMARKS.pr.good*100}%`, Fair: `PR ≥ ${BENCHMARKS.pr.fair*100}%`, Poor: `PR < ${BENCHMARKS.pr.fair*100}%` };
+          return (
+            <div key={g} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+              <div style={{ width: 12, height: 12, borderRadius: 3, background: GRADE_COLORS[g] }} />
+              <span style={{ color: GRADE_COLORS[g], fontWeight: 600 }}>{g}</span>
+              <span style={{ color: "var(--color-text-tertiary)" }}>({thresholds[g]})</span>
+            </div>
+          );
+        })}
+        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginLeft: 8 }}>Grade = worst of PR &amp; SY</span>
       </div>
 
       {/* Bar chart */}
