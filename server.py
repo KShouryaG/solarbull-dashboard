@@ -517,7 +517,9 @@ class SungrowClient:
             return {}
         cache_key = f"portal_rt:{ps_id}"
         def fetch():
-            portal_token = f"{self.user_id}_{self.token}"
+            # Token from iSolarCloud login is already "{user_id}_{token_string}"
+            # so use it directly — prefixing user_id again would double it.
+            portal_token = self.token
             # Build ps_key_list from the device list we already have.
             # Format: {ps_id}_{device_type}_{chnnl_id}_{seq}
             ps_keys = []
@@ -678,7 +680,7 @@ class SungrowClient:
                 "errors": [],
             }
 
-            # Attach alarms from bulk fetch
+            # Attach alarms from bulk fetch (requires Level 2 API access)
             for a in alarm_map.get(pid, []):
                 code = str(a.get("fault_code", a.get("alarm_code", "E01"))).upper()
                 info = lookup_error(code)
@@ -690,6 +692,32 @@ class SungrowClient:
                     "timestamp": a.get("fault_time", a.get("begin_time", datetime.now().isoformat())),
                     "deviceSn":  a.get("device_sn", ""),
                 })
+
+            # When the fault detail API is unavailable (E900), fall back to plant-level
+            # fault indicators from the plant list (fault_count, alarm_count, ps_fault_status).
+            if not summary["errors"]:
+                fc  = int(plant.get("fault_count",  0) or 0)
+                ac  = int(plant.get("alarm_count",  0) or 0)
+                pfs = plant.get("ps_fault_status")
+                if fc > 0 or pfs == 1:
+                    n = fc if fc > 0 else 1
+                    summary["errors"].append({
+                        "code":      "FAULT",
+                        "desc":      f"Device fault reported by iSolarCloud ({n} fault{'s' if n != 1 else ''})",
+                        "severity":  "high",
+                        "fix":       "Open iSolarCloud portal for specific fault code and resolution steps.",
+                        "timestamp": datetime.now().isoformat(),
+                        "deviceSn":  device_sn,
+                    })
+                elif ac > 0:
+                    summary["errors"].append({
+                        "code":      "ALARM",
+                        "desc":      f"Device alarm reported by iSolarCloud ({ac} alarm{'s' if ac != 1 else ''})",
+                        "severity":  "medium",
+                        "fix":       "Open iSolarCloud portal for specific alarm code and resolution steps.",
+                        "timestamp": datetime.now().isoformat(),
+                        "deviceSn":  device_sn,
+                    })
 
             # Per-plant tariff from API (ps_price_kwh field, if present in list data)
             plant_tariff = _safe_float(plant.get("ps_price_kwh") or
