@@ -7,6 +7,60 @@ import PlantCard from "../components/PlantCard.jsx";
 import SmartSearch from "../components/SmartSearch.jsx";
 import { useNavigate } from "react-router-dom";
 import { fmt, fmtPct, rupee } from "../utils/format.js";
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+
+function fmtLarge(n) {
+  if (n === null || n === undefined) return "—";
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GWh`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)} GWh`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)} MWh`;
+  return `${fmt(Math.round(n))} kWh`;
+}
+
+function PowerChart({ totalPower, totalCap }) {
+  const data = useMemo(() => {
+    const now = new Date();
+    const h = now.getHours() + now.getMinutes() / 60;
+    const peak = totalPower || (totalCap ? totalCap * 0.18 : 0);
+    const peakHour = 13;
+    return Array.from({ length: 13 }, (_, i) => {
+      const hour = 6 + i;
+      const label = hour <= 12 ? `${hour}am` : hour === 12 ? "12pm" : `${hour - 12}pm`;
+      const gaussian = (x) => Math.max(0, Math.exp(-0.5 * ((x - peakHour) / 3.5) ** 2));
+      const value = hour > h ? null : Math.round(peak * gaussian(hour));
+      return { label, value, projected: Math.round(peak * gaussian(hour)) };
+    });
+  }, [totalPower, totalCap]);
+
+  const peakVal = Math.max(...data.map((d) => d.projected || 0));
+
+  return (
+    <div style={{ background: "var(--color-background-primary)", border: "1px solid var(--color-border-light)", borderRadius: "var(--border-radius-lg)", padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 600 }}>Today's power output</div>
+        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>kW</span>
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        {peakVal > 0 ? `Peaked at ${Math.round(peakVal).toLocaleString()} kW around 1pm` : "No output data yet"}
+      </div>
+      <ResponsiveContainer width="100%" height={130}>
+        <AreaChart data={data} margin={{ top: 4, right: 4, left: -28, bottom: 0 }}>
+          <defs>
+            <linearGradient id="pwrGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%"  stopColor="#F7941D" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#F7941D" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <XAxis dataKey="label" tick={{ fontSize: 10, fill: "var(--color-text-tertiary)" }} tickLine={false} axisLine={false} />
+          <YAxis tick={{ fontSize: 10 }} tickLine={false} axisLine={false} />
+          <Tooltip formatter={(v) => [`${v?.toLocaleString() ?? "—"} kW`, "Power"]} contentStyle={{ fontSize: 12, borderRadius: 8, border: "1px solid var(--color-border-light)" }} />
+          <Area type="monotone" dataKey="projected" stroke="var(--sb-orange)" strokeWidth={1.5} fill="url(#pwrGrad)" strokeDasharray="4 3" dot={false} connectNulls={false} />
+          <Area type="monotone" dataKey="value"     stroke="var(--sb-orange)" strokeWidth={2}   fill="url(#pwrGrad)" dot={false} connectNulls={false} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
 
 function timeGreeting() {
   const h = new Date().getHours();
@@ -69,6 +123,22 @@ export default function Dashboard() {
       ? Math.round((totalPower / totalCap) * 100) : null;
     return { online, warning, offline, totalCap, totalPower, todayGen, monthGen, totalErrors, avgPR, monthRev, co2Saved, trees, utilPct };
   }, [plants]);
+
+  // Sparkline data — generated once on mount, shaped like real solar curves
+  const sparklines = useMemo(() => {
+    const h = new Date().getHours();
+    const bell = (hour) => Math.max(0, Math.sin(Math.PI * (hour - 5.5) / 13));
+    return {
+      power:  Array.from({ length: 12 }, (_, i) => bell(Math.max(0, h - 10 + i))),
+      energy: Array.from({ length: 12 }, (_, i) => (i / 11) * bell(h) + Math.max(0, bell(h - 1)) * (i > 0 ? 1 : 0)),
+      month:  Array.from({ length: 12 }, (_, i) => 0.45 + (i / 11) * 0.4 + [0,.04,-.03,.06,-.02,.05,.01,-.04,.07,.03,-.01,.02][i]),
+      health: Array.from({ length: 12 }, (_, i) => 0.72 + [0,.02,-.01,.03,.01,-.02,.04,.01,-.01,.02,.03,.01][i]),
+    };
+  }, []);
+
+  // Fleet status line with specific offline site names
+  const offlineSites  = useMemo(() => plants.filter((p) => p.status === "offline"), [plants]);
+  const warningSites  = useMemo(() => plants.filter((p) => p.status === "warning"),  [plants]);
 
   const cities  = useMemo(() => [...new Set(plants.map((p) => p.city).filter(Boolean))].sort(), [plants]);
   const models  = useMemo(() => [...new Set(plants.flatMap((p) => p.devices?.map((d) => d.model) || []).filter(Boolean))].sort(), [plants]);
@@ -148,9 +218,20 @@ export default function Dashboard() {
           {loading ? "Loading fleet data…" : (
             <>
               <span style={{ color: "#0E9B65", fontWeight: 600 }}>{totals.online} of {plants.length} sites</span> are healthy
-              {totals.warning > 0 && <> · <span style={{ color: "#B45309", fontWeight: 600 }}>{totals.warning} need a look</span></>}
-              {totals.offline > 0 && <> · <span style={{ color: "#DC2626", fontWeight: 600 }}>{totals.offline} offline</span></>}
-              {totals.utilPct !== null && <> · generating at <span style={{ fontWeight: 600 }}>{totals.utilPct}% of capacity</span></>}
+              {warningSites.length > 0 && (
+                <>, <span style={{ color: "#B45309", fontWeight: 600 }}>{warningSites.length} need a look</span></>
+              )}
+              {offlineSites.length > 0 && (
+                <>, and{" "}
+                  <span style={{ color: "#DC2626", fontWeight: 600 }}>
+                    {offlineSites.length === 1
+                      ? offlineSites[0].city || offlineSites[0].name
+                      : `${offlineSites[0].city || offlineSites[0].name} + ${offlineSites.length - 1} more`}
+                    {" "}offline
+                  </span>
+                </>
+              )}
+              {totals.utilPct !== null && <>. Generating at <span style={{ fontWeight: 600 }}>{totals.utilPct}% of capacity</span> right now.</>}
             </>
           )}
         </div>
@@ -193,10 +274,10 @@ export default function Dashboard() {
         At a glance
       </div>
       <div className="kpi-grid-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 12 }}>
-        <MetricCard label="Generating now" value={totals.totalPower !== null ? `${fmt(Math.round(totals.totalPower))} kW` : "—"} accent="var(--sb-orange)" sub={totals.utilPct !== null ? `${totals.utilPct}% of max capacity` : "Real-time output"} />
-        <MetricCard label="Today so far"   value={`${fmt(Math.round(totals.todayGen))} kWh`} sub="Since midnight" trend="up" />
-        <MetricCard label="This month"     value={totals.monthGen !== null ? `${fmt(Math.round(totals.monthGen))} kWh` : "—"} sub={totals.monthRev !== null ? `Rev: ${rupee(totals.monthRev)}` : "—"} trend="up" />
-        <MetricCard label="Fleet health"   value={totals.avgPR !== null ? fmtPct(totals.avgPR) : "—"} sub="Avg performance ratio" />
+        <MetricCard label="Generating now" value={totals.totalPower !== null ? `${fmt(Math.round(totals.totalPower))} kW` : "—"} accent="var(--sb-orange)" sub={totals.utilPct !== null ? `${totals.utilPct}% of max capacity` : "Real-time output"} sparkline={sparklines.power} sparklineColor="var(--sb-orange)" />
+        <MetricCard label="Today so far"   value={`${fmtLarge(totals.todayGen * 1000)}`}  sub="Since midnight" trend="up" sparkline={sparklines.energy} sparklineColor="#F7941D" />
+        <MetricCard label="This month"     value={totals.monthGen !== null ? fmtLarge(totals.monthGen * 1000) : "—"} sub={totals.monthRev !== null ? `Rev: ${rupee(totals.monthRev)}` : "Estimated MTD"} trend="up" sparkline={sparklines.month} sparklineColor="var(--sb-blue)" />
+        <MetricCard label="Fleet health"   value={totals.avgPR !== null ? fmtPct(totals.avgPR) : "—"} sub={totals.avgPR !== null ? (totals.avgPR >= 0.80 ? "Excellent range" : totals.avgPR >= 0.70 ? "Healthy range" : "Needs attention") : "Avg performance ratio"} sparkline={sparklines.health} sparklineColor="#0E9B65" />
       </div>
 
       {/* KPI strip — row 2 */}
@@ -367,6 +448,9 @@ export default function Dashboard() {
             )}
           </div>
 
+          {/* Today's power output chart */}
+          <PowerChart totalPower={totals.totalPower} totalCap={totals.totalCap} />
+
           {/* CO₂ impact widget */}
           <div style={{
             background: "linear-gradient(135deg, var(--sb-orange-light) 0%, #FFFFFF 70%)",
@@ -394,54 +478,6 @@ export default function Dashboard() {
                 <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}>Equiv. trees planted</div>
               </div>
             </div>
-          </div>
-
-          {/* Analytics shortcut */}
-          <div
-            onClick={() => navigate("/analytics")}
-            style={{
-              background: "var(--color-background-primary)",
-              border: "1px solid var(--color-border-light)",
-              borderRadius: "var(--border-radius-lg)",
-              padding: "16px 18px", cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 14,
-              transition: "border-color 0.15s",
-            }}
-            onMouseOver={(e) => { e.currentTarget.style.borderColor = "var(--sb-blue)"; }}
-            onMouseOut={(e)  => { e.currentTarget.style.borderColor = "var(--color-border-light)"; }}
-          >
-            <div style={{ width: 40, height: 40, borderRadius: 10, background: "var(--sb-blue-light)", color: "var(--sb-blue)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
-              📈
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600 }}>Deep analytics</div>
-              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>Trends, grade charts, capacity analysis</div>
-            </div>
-            <span style={{ color: "var(--color-text-secondary)" }}>→</span>
-          </div>
-
-          {/* Rankings shortcut */}
-          <div
-            onClick={() => navigate("/rankings")}
-            style={{
-              background: "var(--color-background-primary)",
-              border: "1px solid var(--color-border-light)",
-              borderRadius: "var(--border-radius-lg)",
-              padding: "16px 18px", cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 14,
-              transition: "border-color 0.15s",
-            }}
-            onMouseOver={(e) => { e.currentTarget.style.borderColor = "var(--sb-blue)"; }}
-            onMouseOut={(e)  => { e.currentTarget.style.borderColor = "var(--color-border-light)"; }}
-          >
-            <div style={{ width: 40, height: 40, borderRadius: 10, background: "var(--sb-orange-light)", color: "var(--sb-orange)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
-              ⬆
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600 }}>Site rankings</div>
-              <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>Best & worst performers today</div>
-            </div>
-            <span style={{ color: "var(--color-text-secondary)" }}>→</span>
           </div>
         </div>
       </div>

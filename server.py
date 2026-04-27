@@ -599,8 +599,15 @@ class SungrowClient:
             if not pid:
                 continue
 
-            raw_month = plant.get("month_energy")
+            raw_month = (plant.get("month_energy") or plant.get("monthEnergy") or
+                         plant.get("month_gen") or plant.get("month_power"))
             month_energy = _sg_val(raw_month) if raw_month is not None else None
+
+            # Estimate month-to-date energy when API doesn't return it
+            if month_energy is None:
+                _today_raw = _sg_val(plant.get("today_energy", 0))
+                if _today_raw and _today_raw > 0:
+                    month_energy = round(_today_raw * datetime.now().day, 1)
 
             # Device model from list data (avoids per-plant getDeviceList call)
             device_model = plant.get("device_model_code", plant.get("device_model_name", ""))
@@ -795,8 +802,21 @@ def compute_plant_stats(plant: dict, tariff: float = None) -> dict:
     # Per-plant tariff precedence: caller arg > plant field > global default
     effective_tariff = tariff or plant.get("tariffPerKwh") or TARIFF_PER_KWH
 
-    specific_yield   = round(today_e / cap, 3)            if cap > 0 else None
-    perf_ratio       = round(specific_yield / PEAK_SUN_HOURS, 3) if specific_yield is not None else None
+    # Prefer Sungrow's own specific yield (equivalent_hour = kWh/kWp/day) when available.
+    # Computing from today_e / cap risks unit mismatches in the API response.
+    equiv = plant.get("equivalentHours")
+    try:
+        equiv_f = float(equiv) if equiv is not None else None
+    except (TypeError, ValueError):
+        equiv_f = None
+    if equiv_f and 0 < equiv_f < 25:
+        specific_yield = round(equiv_f, 3)
+    elif cap > 0 and today_e > 0:
+        sy_raw = today_e / cap
+        specific_yield = round(sy_raw, 3) if sy_raw < 25 else None  # sanity cap
+    else:
+        specific_yield = None
+    perf_ratio = round(specific_yield / PEAK_SUN_HOURS, 3) if specific_yield is not None else None
     capacity_factor  = round((today_e / (cap * 24)) * 100, 2)   if cap > 0 else None
     co2_avoided_raw  = plant.get("co2") or round(total_e * CO2_KG_PER_KWH, 1)
     co2_avoided      = _normalise_co2_tonnes(co2_avoided_raw)
